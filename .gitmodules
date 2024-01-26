@@ -1,0 +1,3 @@
+[submodule "self_supervision/models/barlowtwins"]
+	path = self_supervision/models/barlowtwins
+	url = https://github.com/facebookresearch/barlowtwins.git
