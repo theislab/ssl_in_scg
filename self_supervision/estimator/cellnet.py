@@ -7,7 +7,6 @@ import numpy as np
 import pandas as pd
 import lightning.pytorch as pl
 import torch
-from torch.utils.data import Sampler
 
 from self_supervision.data.datamodules import MerlinDataModule
 from self_supervision.models.lightning_modules.cellnet_autoencoder import (
@@ -19,17 +18,6 @@ from self_supervision.models.lightning_modules.cellnet_autoencoder import (
     MLPNegBin,
     VAENegBin,
 )
-
-
-class SubsetSampler(Sampler):
-    def __init__(self, indices):
-        self.indices = indices
-
-    def __iter__(self):
-        return (self.indices[i] for i in torch.randperm(len(self.indices)))
-
-    def __len__(self):
-        return len(self.indices)
 
 
 class EstimatorAutoEncoder:
@@ -71,10 +59,6 @@ class EstimatorAutoEncoder:
             self.model = VAE(**{**self.get_fixed_autoencoder_params(), **model_kwargs})
         elif model_type == "mlp_negbin":
             self.model = MLPNegBin(
-                **{**self.get_fixed_autoencoder_params(), **model_kwargs}
-            )
-        elif model_type == "mlp_negbin_vae":
-            self.model = VAENegBin(
                 **{**self.get_fixed_autoencoder_params(), **model_kwargs}
             )
         elif model_type == "mlp_byol":  # Bootstrap Your Own Latent
