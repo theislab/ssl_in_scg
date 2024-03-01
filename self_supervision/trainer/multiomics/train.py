@@ -21,7 +21,7 @@ from self_supervision.models.lightning_modules.multiomics_autoencoder import (
     OldMLPAutoEncoder,
     FG_BG_MultiomicsAutoencoder,
 )
-from self_supervision.models.lightning_modules.cellnet_autoencoder2 import (
+from self_supervision.models.lightning_modules.multiomics_autoencoder import (
     MLPBarlowTwins,
     MLPBYOL,
 )

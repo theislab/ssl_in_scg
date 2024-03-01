@@ -115,7 +115,6 @@ def train():
     print(args)
 
     # FIX SEED FOR REPRODUCIBILITY
-    # seed_everything(90)
     torch.manual_seed(0)
 
     # if args.mask_rate is not None but args.masking_strategy is None, args.masking_strategy is set to 'random'
