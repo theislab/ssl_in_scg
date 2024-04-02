@@ -1,5 +1,5 @@
-Self Supervision
-=======
+Delineating the Effective Use of Self-Supervised Learning in Single-Cell Genomics
+=================================================================================
 
 Self-supervised learning of single-cell genomics data.
 
