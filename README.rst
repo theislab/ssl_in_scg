@@ -13,8 +13,9 @@ Installation Guide
 -------------------
 1. Create a conda environment:
 
-   ```bash
-   conda env create -f environment.yml
+   .. code-block:: bash
+
+       conda env create -f environment.yml
 
 2. Activate the environment:
 
