@@ -21,7 +21,7 @@ Installation Guide
 
    .. code-block:: bash
 
-       conda activate ss_env
+       conda activate ssl
 
 3. Install the package in development mode:
 
