@@ -5,9 +5,9 @@ Repository for the `paper <https://www.biorxiv.org/content/10.1101/2024.02.16.58
 
 System Requirements
 -------------------
-- Python 3.9
+- Python 3.10
 - Dependencies listed in `requirements.txt`
-- Tested on Python 3.9
+- Tested on Python 3.10
 
 Installation Guide
 -------------------
