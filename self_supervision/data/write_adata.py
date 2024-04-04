@@ -49,7 +49,7 @@ def get_count_matrix_and_obs(
     return x, obs
 
 
-def write_adata_with_scanpy_subsample(
+def write_adata(
     perc: int,
     hvg_indices: Optional[List[int]] = None,
     split: str = "train",
@@ -108,7 +108,7 @@ def parse_arguments():
     return parser.parse_args()
 
 
-# run the script in bash with:
+# Usage example in bash:
 # python write_adata.py --perc 100 --split train --adata_dir /lustre/groups/ml01/workspace/mojtaba.bahrami/cellxgene/
 
 if __name__ == "__main__":
@@ -125,7 +125,7 @@ if __name__ == "__main__":
 
     print(f"Writing adata for {args.perc}% of the data in {args.split}...")
     with managed_computation():
-        write_adata_with_scanpy_subsample(
+        write_adata(
             perc=args.perc,
             hvg_indices=hvg_indices,
             split=args.split,
