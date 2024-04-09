@@ -102,8 +102,6 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
         # fixed params
         gene_dim: int,
         # params from datamodule
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
         # model specific params
         reconst_loss: str = "mse",
@@ -120,8 +118,6 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
         self.automatic_optimization = automatic_optimization
 
         self.gene_dim = gene_dim
-        self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.gc_freq = gc_frequency
 
@@ -230,11 +226,7 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
         class_weights: np.ndarray,
         child_matrix: np.ndarray,
         # params from datamodule
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
         # model specific params
         supervised_subset: Optional[int] = None,
         learning_rate: float = 0.005,
@@ -248,11 +240,8 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
 
         self.gene_dim = gene_dim
         self.type_dim = type_dim
-        self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.gc_freq = gc_frequency
-        self.num_hvgs = num_hvgs
         self.supervised_subset = supervised_subset
 
         self.lr = learning_rate
@@ -274,12 +263,6 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
         self.register_buffer("class_weights", torch.tensor(class_weights.astype("f4")))
         self.register_buffer("child_lookup", torch.tensor(child_matrix.astype("i8")))
 
-        # if hvg:
-        #     root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        #     self.hvg_indices = pickle.load(open(root + '/self_supervision/data/hvg_' + str(self.num_hvgs) + '_indices.pickle',
-        #                                         'rb'))
-        # else:
-        #     self.hvg_indices = None
 
     @abc.abstractmethod
     def _step(self, batch, training=True) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -422,11 +405,7 @@ class MLPAutoEncoder(BaseAutoEncoder):
         units_encoder: List[int],
         units_decoder: List[int],
         # params from datamodule
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
         # model specific params
         supervised_subset: Optional[int] = None,
         reconstruction_loss: str = "mse",
@@ -442,7 +421,6 @@ class MLPAutoEncoder(BaseAutoEncoder):
         masking_rate: Optional[float] = None,
         masking_strategy: Optional[str] = None,  # 'random', 'gene_program'
         encoded_gene_program: Optional[Dict] = None,
-        vae_type: Optional[str] = None,  # make prettier, this is not necessary here
     ):
         # check input
         assert 0.0 <= dropout <= 1.0
@@ -450,15 +428,11 @@ class MLPAutoEncoder(BaseAutoEncoder):
         if reconstruction_loss in ["continuous_bernoulli", "bce"]:
             assert output_activation == nn.Sigmoid
 
-        self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.supervised_subset = supervised_subset
 
         super(MLPAutoEncoder, self).__init__(
             gene_dim=gene_dim,
-            train_set_size=train_set_size,
-            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -509,7 +483,6 @@ class MLPAutoEncoder(BaseAutoEncoder):
         self.masking_rate = masking_rate
         self.masking_strategy = masking_strategy
         self.encoded_gene_program = encoded_gene_program
-        self.num_hvgs = num_hvgs
 
         root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -841,11 +814,7 @@ class MLPClassifier(BaseClassifier):
         child_matrix: np.ndarray,
         units: List[int],
         # params from datamodule
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
         # model specific params
         supervised_subset: Optional[int] = None,
         dropout: float = 0.0,
@@ -860,11 +829,7 @@ class MLPClassifier(BaseClassifier):
             type_dim=type_dim,
             class_weights=class_weights,
             child_matrix=child_matrix,
-            train_set_size=train_set_size,
-            val_set_size=val_set_size,
             batch_size=batch_size,
-            hvg=hvg,
-            num_hvgs=num_hvgs,
             supervised_subset=supervised_subset,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -932,11 +897,7 @@ class MLPBYOL(BaseAutoEncoder):
         gene_dim: int,
         units_encoder: List[int],
         # params from datamodule
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
         # contrastive learning params
         backbone: str,  # MLP, TabNet
         augment_type: str,  # Gaussian, Uniform
@@ -954,14 +915,10 @@ class MLPBYOL(BaseAutoEncoder):
         # check input
         assert 0.0 <= dropout <= 1.0
 
-        self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
 
         super(MLPBYOL, self).__init__(
             gene_dim=gene_dim,
-            train_set_size=train_set_size,
-            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=lr,
             weight_decay=weight_decay,
@@ -977,7 +934,6 @@ class MLPBYOL(BaseAutoEncoder):
         self.activation = activation
         self.dropout = dropout
         self.inner_model = self._get_inner_model()
-        self.num_hvgs = num_hvgs
 
         self.byol = BYOL(
             net=self.inner_model,
@@ -1068,10 +1024,7 @@ class MLPBarlowTwins(BaseAutoEncoder):
         gene_dim: int,
         # params from datamodule
         train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
         # contrastive learning params
         CHECKPOINT_PATH: str,
         backbone: str,  # MLP, TabNet
@@ -1095,7 +1048,6 @@ class MLPBarlowTwins(BaseAutoEncoder):
         super(MLPBarlowTwins, self).__init__(
             gene_dim=gene_dim,
             train_set_size=train_set_size,
-            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=lr,
             weight_decay=weight_decay,
@@ -1109,10 +1061,8 @@ class MLPBarlowTwins(BaseAutoEncoder):
 
         self.best_val_loss = np.inf
         self.best_train_loss = np.inf
-        self.num_hvgs = num_hvgs
         self.mode = mode
         self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.weight_decay = weight_decay
         self.learning_rate_weights = learning_rate_weights
@@ -1130,8 +1080,6 @@ class MLPBarlowTwins(BaseAutoEncoder):
         self.activation = activation
         self.dropout = dropout
         self.batch_size = batch_size
-
-        self.hvg = hvg
 
         self.transform = Transform(p=augment_intensity)
         self.CHECKPOINT_PATH = CHECKPOINT_PATH
