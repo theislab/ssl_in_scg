@@ -34,13 +34,6 @@ def parse_args():
         choices=["MLP", "VAE", "NegBin"],
         help="Model to use",
     )
-    parser.add_argument(
-        "--vae_type",
-        type=str,
-        default="simple_vae",
-        choices=["simple_vae", "scvi_vae"],
-        help="VAE type",
-    )
     parser.add_argument("--mask_rate", type=float, default=None, help="Masking rate")
     parser.add_argument(
         "--masking_strategy",
@@ -115,7 +108,6 @@ def train():
     print(args)
 
     # FIX SEED FOR REPRODUCIBILITY
-    # seed_everything(90)
     torch.manual_seed(0)
 
     # if args.mask_rate is not None but args.masking_strategy is None, args.masking_strategy is set to 'random'
@@ -130,10 +122,6 @@ def train():
     if args.hvg is True:
         use_hvg = "HVG_" + str(args.num_hvgs) + "_"
         num_hvgs = args.num_hvgs
-    elif args.pert:
-        use_hvg = "Pert_"
-        args.hvg = True  # for initializing the Estimator
-        num_hvgs = 1000  # for initializing the Estimator
     else:
         use_hvg = ""
         num_hvgs = None
@@ -345,8 +333,6 @@ def train():
             "encoded_gene_program": encoded_gene_program,
             "units_encoder": args.hidden_units,
             "units_decoder": args.hidden_units[::-1][1:] if args.decoder else [],
-            "vae_type": args.vae_type,
-            "pert": pert,
         },
     )
 

@@ -1,22 +1,24 @@
+import abc
+import gc
+from typing import Callable, Dict, List, Optional, Tuple
+import os
+import numpy as np
+import pickle
 import lightning.pytorch as pl
-from torch.distributions import Bernoulli, ContinuousBernoulli
-from scvi.distributions import NegativeBinomial
-from torchmetrics import MetricCollection
-from typing import Optional, Dict, Callable
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch
-import torch.optim as optim
-import numpy as np
-from functools import partial
-import os
-import pickle
-import gc
-import abc
-from torchmetrics import ExplainedVariance, MeanSquaredError
-
-
-from self_supervision.models.contrastive.bt import Transform
+from torch.distributions import Bernoulli, ContinuousBernoulli
+from torchmetrics import ExplainedVariance, MeanSquaredError, MetricCollection
+from torchmetrics.classification import MulticlassF1Score
+from self_supervision.models.base.base import MLP
+from self_supervision.models.contrastive.byol import BYOL
+from self_supervision.models.contrastive.bt2 import (
+    BarlowTwins,
+    Transform,
+    LARS,
+    adjust_learning_rate,
+)
 
 
 def _mask_gene_programs_numpy(
@@ -69,19 +71,36 @@ def _only_activate_gene_program_numpy(
     input_mask = np.zeros_like(inputs.cpu().numpy())
     output_mask = np.zeros_like(inputs.cpu().numpy())
     for ix, key in enumerate(gene_programs_to_activate):
-        input_mask[ix, encoded_gene_program[key][1]] = 1
-        output_mask[ix, encoded_gene_program[key][0]] = 1
+        input_mask[ix, encoded_gene_program[key][0]] = 1
+        output_mask[ix, encoded_gene_program[key][1]] = 1
     return input_mask, output_mask
 
 
-"""### base class of autoencoder"""
+def _mask_single_gene_programs(
+    inputs: torch.Tensor,
+    encoded_gene_program: np.ndarray,
+):
+    """
+    Randomly choose 1 gene program, mask everything apart from that gene program both in the input and output.
+    """
+    # Randomly choose 1 gene program
+    num_gene_programs = encoded_gene_program.shape[0]
+    gene_program_to_mask = np.random.permutation(num_gene_programs)[:1]
+    # Mask the input tensor and cast it to numpy on cpu
+    input_mask = np.zeros_like(inputs.cpu().numpy())
+    output_mask = np.zeros_like(inputs.cpu().numpy())
+    input_mask[:, encoded_gene_program[gene_program_to_mask, :] == 1] = 1
+    output_mask[:, encoded_gene_program[gene_program_to_mask, :] == 1] = 1
+    return input_mask, output_mask
 
 
 class BaseAutoEncoder(pl.LightningModule, abc.ABC):
-    autoencoder: nn.Module  # autoencoder mapping von n_genes to n_genes
+    autoencoder: nn.Module  # autoencoder mapping von gene_dim to gene_dim
 
     def __init__(
         self,
+        # fixed params
+        gene_dim: int,
         # params from datamodule
         batch_size: int,
         # model specific params
@@ -91,13 +110,14 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
         optimizer: Callable[..., torch.optim.Optimizer] = torch.optim.AdamW,
         lr_scheduler: Callable = None,
         lr_scheduler_kwargs: Dict = None,
-        gc_frequency: int = 1,
+        gc_frequency: int = 5,
         automatic_optimization: bool = True,
     ):
         super(BaseAutoEncoder, self).__init__()
 
         self.automatic_optimization = automatic_optimization
 
+        self.gene_dim = gene_dim
         self.batch_size = batch_size
         self.gc_freq = gc_frequency
 
@@ -146,6 +166,10 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
         """Calculate predictions (int64 tensor) and loss"""
         pass
 
+    # def on_after_batch_transfer(self, batch, dataloader_idx):
+    #     batch = batch[0]
+    #     return batch
+
     def on_after_batch_transfer(self, batch, dataloader_idx):
         if isinstance(batch, dict):  # Case for MultiomicsDataloader
             return batch
@@ -191,24 +215,199 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
         return optimizer_config
 
 
-class OldMLPAutoEncoder(BaseAutoEncoder):
+class BaseClassifier(pl.LightningModule, abc.ABC):
+    classifier: Callable  # classifier mapping von gene_dim to type_dim - outputs logits
+
     def __init__(
         self,
         # fixed params
+        gene_dim: int,
+        type_dim: int,
+        class_weights: np.ndarray,
+        child_matrix: np.ndarray,
         # params from datamodule
-        n_proteins: int = 134,
-        batch_size: int = 8192,
-        # multiomics specs
-        n_genes=2000,
-        n_batches=12,
-        n_hidden=256,
-        n_latent=40,
-        n_data=90261,
-        intensity: Optional[float] = 0.0001,
-        lambda_coeff: Optional[float] = 0.0051,
-        n_projector_dim: Optional[int] = 512,
-        gc_frequency: int = 5,
+        batch_size: int,
         # model specific params
+        supervised_subset: Optional[int] = None,
+        learning_rate: float = 0.005,
+        weight_decay: float = 0.1,
+        optimizer: Callable[..., torch.optim.Optimizer] = torch.optim.AdamW,
+        lr_scheduler: Callable = None,
+        lr_scheduler_kwargs: Dict = None,
+        gc_frequency: int = 1,
+    ):
+        super(BaseClassifier, self).__init__()
+
+        self.gene_dim = gene_dim
+        self.type_dim = type_dim
+        self.batch_size = batch_size
+        self.gc_freq = gc_frequency
+        self.supervised_subset = supervised_subset
+
+        self.lr = learning_rate
+        self.weight_decay = weight_decay
+        self.optim = optimizer
+        self.lr_scheduler = lr_scheduler
+        self.lr_scheduler_kwargs = lr_scheduler_kwargs
+
+        metrics = MetricCollection(
+            {
+                "f1_micro": MulticlassF1Score(num_classes=type_dim, average="micro"),
+                "f1_macro": MulticlassF1Score(num_classes=type_dim, average="macro"),
+            }
+        )
+        self.train_metrics = metrics.clone(prefix="train_")
+        self.val_metrics = metrics.clone(prefix="val_")
+        self.test_metrics = metrics.clone(prefix="test_")
+
+        self.register_buffer("class_weights", torch.tensor(class_weights.astype("f4")))
+        self.register_buffer("child_lookup", torch.tensor(child_matrix.astype("i8")))
+
+
+    @abc.abstractmethod
+    def _step(self, batch, training=True) -> Tuple[torch.Tensor, torch.Tensor]:
+        pass
+
+    def hierarchy_correct(self, preds, targets) -> Tuple[torch.Tensor, torch.Tensor]:
+        pred_is_child_node_or_node = (
+            torch.sum(
+                self.child_lookup[targets, :] * F.one_hot(preds, self.type_dim), dim=1
+            )
+            > 0
+        )
+
+        return (
+            torch.where(pred_is_child_node_or_node, targets, preds),  # corrected preds
+            torch.where(
+                pred_is_child_node_or_node, preds, targets
+            ),  # corrected targets
+        )
+
+    def on_after_batch_transfer(self, batch, dataloader_idx):
+        with torch.no_grad():
+            batch = batch[0]
+            batch["cell_type"] = torch.squeeze(batch["cell_type"])
+
+        return batch
+
+    def forward(self, x: torch.Tensor):
+        if self.multiomics_indices:
+            # If x is a tuple, which can happen in some testing due to lightning, then we need to extract the tensor
+            if isinstance(x, tuple):
+                x = x[0]["X"]
+            x = x[:, self.multiomics_indices]
+        return self.classifier(x)
+
+    def training_step(self, batch, batch_idx):
+        if self.supervised_subset is not None:
+            mask = batch["dataset_id"] == self.supervised_subset
+            if not any(mask):
+                return  # Skip the batch if no items match the condition
+
+            # Filter the batch based on the mask
+            batch = {key: value[mask] for key, value in batch.items()}
+        preds, loss = self._step(batch, training=True)
+        self.log("train_loss", loss)
+        f1_macro = self.train_metrics["f1_macro"](preds, batch["cell_type"])
+        f1_micro = self.train_metrics["f1_micro"](preds, batch["cell_type"])
+        self.log("train_f1_macro_step", f1_macro)
+        self.log("train_f1_micro_step", f1_micro)
+
+        if batch_idx % self.gc_freq == 0:
+            gc.collect()
+
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        if self.supervised_subset is not None:
+            mask = batch["dataset_id"] == self.supervised_subset
+            if not any(mask):
+                return  # Skip the batch if no items match the condition
+
+            # Filter the batch based on the mask
+            batch = {key: value[mask] for key, value in batch.items()}
+        preds, loss = self._step(batch, training=False)
+        self.log("val_loss", loss)
+        self.val_metrics["f1_macro"].update(preds, batch["cell_type"])
+        self.val_metrics["f1_micro"].update(preds, batch["cell_type"])
+        if batch_idx % self.gc_freq == 0:
+            gc.collect()
+
+    def test_step(self, batch, batch_idx):
+        if self.supervised_subset is not None:
+            mask = batch["dataset_id"] == self.supervised_subset
+            if not any(mask):
+                return  # Skip the batch if no items match the condition
+
+            # Filter the batch based on the mask
+            batch = {key: value[mask] for key, value in batch.items()}
+        preds, loss = self._step(batch, training=False)
+        self.log("test_loss", loss)
+        self.test_metrics["f1_macro"].update(preds, batch["cell_type"])
+        self.test_metrics["f1_micro"].update(preds, batch["cell_type"])
+        if batch_idx % self.gc_freq == 0:
+            gc.collect()
+
+    def on_train_epoch_end(self) -> None:
+        self.log("train_f1_macro_epoch", self.train_metrics["f1_macro"].compute())
+        self.train_metrics["f1_macro"].reset()
+        self.log("train_f1_micro_epoch", self.train_metrics["f1_micro"].compute())
+        self.train_metrics["f1_micro"].reset()
+        gc.collect()
+
+    def on_validation_epoch_end(self) -> None:
+        f1_macro = self.val_metrics["f1_macro"].compute()
+        self.log("val_f1_macro", f1_macro)
+        self.log("hp_metric", f1_macro)
+        self.val_metrics["f1_macro"].reset()
+        self.log("val_f1_micro", self.val_metrics["f1_micro"].compute())
+        self.val_metrics["f1_micro"].reset()
+        gc.collect()
+
+    def on_test_epoch_end(self) -> None:
+        self.log("test_f1_macro", self.test_metrics["f1_macro"].compute())
+        self.test_metrics["f1_macro"].reset()
+        self.log("test_f1_micro", self.test_metrics["f1_micro"].compute())
+        self.test_metrics["f1_micro"].reset()
+        gc.collect()
+
+    def configure_optimizers(self):
+        optimizer_config = {
+            "optimizer": self.optim(
+                self.parameters(), lr=self.lr, weight_decay=self.weight_decay
+            )
+        }
+        if self.lr_scheduler is not None:
+            lr_scheduler_kwargs = (
+                {} if self.lr_scheduler_kwargs is None else self.lr_scheduler_kwargs
+            )
+            interval = lr_scheduler_kwargs.pop("interval", "epoch")
+            monitor = lr_scheduler_kwargs.pop("monitor", "val_loss_epoch")
+            frequency = lr_scheduler_kwargs.pop("frequency", 1)
+            scheduler = self.lr_scheduler(
+                optimizer_config["optimizer"], **lr_scheduler_kwargs
+            )
+            optimizer_config["lr_scheduler"] = {
+                "scheduler": scheduler,
+                "interval": interval,
+                "monitor": monitor,
+                "frequency": frequency,
+            }
+
+        return optimizer_config
+
+
+class MLPAutoEncoder(BaseAutoEncoder):
+    def __init__(
+        self,
+        # fixed params
+        gene_dim: int,
+        units_encoder: List[int],
+        units_decoder: List[int],
+        # params from datamodule
+        batch_size: int,
+        # model specific params
+        supervised_subset: Optional[int] = None,
         reconstruction_loss: str = "mse",
         learning_rate: float = 0.005,
         weight_decay: float = 0.1,
@@ -217,32 +416,12 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
         lr_scheduler: Callable = None,
         lr_scheduler_kwargs: Dict = None,
         output_activation: Callable[[], torch.nn.Module] = nn.Sigmoid,
+        activation: Callable[[], torch.nn.Module] = nn.SELU,
         # params for masking
-        masking_rate: Optional[float] = 0.5,
-        masking_strategy: Optional[str] = "random",  # 'random', 'gene_program'
-        encoded_gene_program: Optional[
-            Dict
-        ] = None,  # only needed if masking_strategy == 'gene_program'
+        masking_rate: Optional[float] = None,
+        masking_strategy: Optional[str] = None,  # 'random', 'gene_program'
+        encoded_gene_program: Optional[Dict] = None,
     ):
-        # multiomics specs
-        self.n_genes = n_genes
-        self.n_proteins = n_proteins
-        self.n_batches = n_batches
-        self.n_hidden = n_hidden
-        self.n_latent = n_latent
-        self.batch_size = batch_size
-        self.n_projector_dim = n_projector_dim
-        self.reconst_loss = "mse"
-        self.dropout = dropout
-        self.lr = learning_rate
-        self.wd = weight_decay
-        self.gc_freq = gc_frequency
-        self.lambda_coeff = lambda_coeff
-        self.intensity = intensity
-        self.masking_rate = masking_rate
-        self.masking_strategy = masking_strategy
-        self.encoded_gene_program = encoded_gene_program
-
         # check input
         assert 0.0 <= dropout <= 1.0
         assert reconstruction_loss in ["mse", "mae", "continuous_bernoulli", "bce"]
@@ -250,9 +429,10 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
             assert output_activation == nn.Sigmoid
 
         self.batch_size = batch_size
-        self.dropout = dropout
+        self.supervised_subset = supervised_subset
 
-        super(OldMLPAutoEncoder, self).__init__(
+        super(MLPAutoEncoder, self).__init__(
+            gene_dim=gene_dim,
             batch_size=batch_size,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -260,85 +440,50 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
             lr_scheduler=lr_scheduler,
             lr_scheduler_kwargs=lr_scheduler_kwargs,
         )
-        self.save_hyperparameters(ignore=["n_genes", "n_proteins"])
 
-        self.encoder = nn.Sequential(
-            nn.Linear(
-                in_features=self.n_genes + self.n_proteins + self.n_batches,
-                out_features=self.n_hidden,
-                bias=True,
-            ),
-            nn.BatchNorm1d(
-                self.n_hidden,
-                eps=0.001,
-                momentum=0.01,
-                affine=True,
-                track_running_stats=True,
-            ),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout, inplace=False),
-            nn.Linear(
-                in_features=self.n_hidden + self.n_batches,
-                out_features=self.n_hidden,
-                bias=True,
-            ),
-            nn.BatchNorm1d(
-                self.n_hidden,
-                eps=0.001,
-                momentum=0.01,
-                affine=True,
-                track_running_stats=True,
-            ),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout, inplace=False),
-            nn.Linear(
-                in_features=self.n_hidden + self.n_batches,
-                out_features=self.n_latent,
-                bias=True,
-            ),
+        self.encoder = MLP(
+            in_channels=gene_dim,
+            hidden_channels=units_encoder,
+            activation_layer=activation,
+            inplace=False,
+            dropout=dropout,
         )
+        # Define decoder network
         self.decoder = nn.Sequential(
-            nn.Linear(
-                in_features=self.n_latent + self.n_batches,
-                out_features=self.n_hidden,
-                bias=True,
+            MLP(
+                in_channels=units_encoder[-1],
+                hidden_channels=units_decoder + [gene_dim],
+                # norm_layer=_get_norm_layer(batch_norm=batch_norm, layer_norm=layer_norm),
+                activation_layer=activation,
+                inplace=False,
+                dropout=dropout,
             ),
-            nn.BatchNorm1d(
-                self.n_hidden,
-                eps=0.001,
-                momentum=0.01,
-                affine=True,
-                track_running_stats=True,
-            ),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout, inplace=False),
-            nn.Linear(
-                in_features=self.n_hidden + self.n_batches,
-                out_features=self.n_hidden,
-                bias=True,
-            ),
-            nn.BatchNorm1d(
-                self.n_hidden,
-                eps=0.001,
-                momentum=0.01,
-                affine=True,
-                track_running_stats=True,
-            ),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout, inplace=False),
-            nn.Linear(
-                in_features=self.n_hidden + n_batches,
-                out_features=self.n_genes + self.n_proteins + self.n_batches,
-                bias=True,
-            ),
+            output_activation(),
         )
+
+        self.predict_bottleneck = False
+
+        metrics = MetricCollection(
+            {
+                "explained_var_weighted": ExplainedVariance(
+                    multioutput="variance_weighted"
+                ),
+                "explained_var_uniform": ExplainedVariance(
+                    multioutput="uniform_average"
+                ),
+                "mse": MeanSquaredError(),
+            }
+        )
+
+        self.train_metrics = metrics.clone(prefix="train_")
+        self.val_metrics = metrics.clone(prefix="val_")
+        self.test_metrics = metrics.clone(prefix="test_")
 
         # masking
         self.masking_rate = masking_rate
         self.masking_strategy = masking_strategy
         self.encoded_gene_program = encoded_gene_program
 
-        # Choose gene indices from NeurIPS dataset in the CellNet data
         root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         )
@@ -346,37 +491,13 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
             open(root + "/self_supervision/data/multiomics_indices.pickle", "rb")
         )
 
-        self.train_iters_per_epoch = n_data // self.batch_size
-        self.warmup_epochs = 10
-        self.transform = Transform(p=intensity)
-        self.masking_rate = masking_rate
-        self.masking_strategy = masking_strategy
-        self.encoded_gene_program = encoded_gene_program
-
     def _step(self, batch, training=True):
         targets = batch["X"]
         inputs = batch["X"]
-        if inputs.dim() == 3:
-            inputs = inputs.squeeze(1)
 
-        if targets.dim() == 3:
-            targets = targets.squeeze(1)
-
-        proteins = torch.zeros((inputs.shape[0], 146))
-        proteins = proteins.to(targets.device)
-
-        if self.multiomics_indices is not None and inputs.shape[1] == 19331:
+        if self.multiomics_indices is not None:
             inputs = inputs[:, self.multiomics_indices]
             targets = targets[:, self.multiomics_indices]
-
-        # assert if inputs and targets shape is not batch size x 2000 (hvgs)
-        assert (
-            inputs.shape[1] == self.n_genes
-        ), f"inputs shape is {inputs.shape} instead of {self.n_genes}"
-        assert (
-            targets.shape[1] == self.n_genes
-        ), f"targets shape is {targets.shape} instead of {self.n_genes}"
-
         if self.masking_rate and self.masking_strategy == "random":
             mask = (
                 Bernoulli(probs=1.0 - self.masking_rate)
@@ -384,46 +505,57 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
                 .to(targets.device)
             )
             # upscale inputs to compensate for masking and convert to same device
-            masked_inputs = 1.0 / (1.0 - self.masking_rate) * (inputs * (1 - mask))
-            masked_inputs = torch.cat((masked_inputs, proteins), dim=1)
-            targets = torch.cat((targets, proteins), dim=1)
+            masked_inputs = 1.0 / (1.0 - self.masking_rate) * (inputs * mask)
             x_latent, x_reconst = self(masked_inputs)
-            # calculate masked loss
+            # calculate masked loss on masked part only
+            inv_mask = torch.abs(torch.ones(mask.size()).to(targets.device) - mask)
             loss = (
-                mask
-                * self._calc_reconstruction_loss(
-                    x_reconst[:, : self.n_genes],
-                    targets[:, : self.n_genes],
-                    reduction="none",
-                )
+                inv_mask
+                * self._calc_reconstruction_loss(x_reconst, targets, reduction="none")
             ).mean()
 
         elif self.masking_rate and self.masking_strategy == "gene_program":
             with torch.no_grad():
+                # self.encoded gene program is a numpy array of encoded gene programs
                 mask, frac = _mask_gene_programs_numpy(
-                    inputs=inputs,
-                    encoded_gene_program=self.encoded_gene_program,
-                    masking_rate=self.masking_rate,
+                    inputs, self.encoded_gene_program, self.masking_rate
                 )
+                mask = torch.tensor(mask).to(inputs.device)
                 # log the fraction of genes masked
                 self.log("frac_genes_masked", frac)
                 # mask, frac = self.mask_gene_programs(inputs, self.gene_program_dict, self.masking_rate)
             # upscale inputs to compensate for masking
-            masked_inputs = (
-                1.0 / (1.0 - frac) * (inputs * torch.tensor(1 - mask).to(inputs.device))
-            )
-            proteins = proteins.to(targets.device)
-            masked_inputs = torch.cat((masked_inputs, proteins), dim=1)
-            targets = torch.cat((targets, proteins), dim=1)
+            masked_inputs = 1.0 / (1.0 - frac) * (inputs * mask.to(inputs.device))
             x_latent, x_reconst = self(masked_inputs)
             # calculate masked loss
+            inv_mask = torch.abs(torch.ones(mask.size()).to(targets.device) - mask)
             loss = (
-                torch.tensor(mask).to(inputs.device)
-                * self._calc_reconstruction_loss(
-                    x_reconst[:, : self.n_genes],
-                    targets[:, : self.n_genes],
-                    reduction="none",
+                inv_mask.to(inputs.device)
+                * self._calc_reconstruction_loss(x_reconst, targets, reduction="none")
+            ).mean()
+
+        elif self.masking_rate and self.masking_strategy == "single_gene_program":
+            with torch.no_grad():
+                # self.encoded gene program is a numpy array of encoded gene programs
+                input_mask, output_mask = _mask_single_gene_programs(
+                    inputs, self.encoded_gene_program
                 )
+                # log the fraction of genes masked
+                self.log("frac_genes_masked", frac)
+            # upscale inputs to compensate for masking
+            masked_inputs = (
+                1.0
+                / (1.0 - frac)
+                * (inputs * torch.tensor(input_mask).to(inputs.device))
+            )
+            x_latent, x_reconst = self(masked_inputs)
+            # calculate masked loss only on the output_mask part of the reconstruction
+            inv_output_mask = torch.abs(
+                torch.ones(output_mask.size()).to(targets.device) - output_mask
+            )
+            loss = (
+                torch.tensor(inv_output_mask).to(inputs.device)
+                * self._calc_reconstruction_loss(x_reconst, targets, reduction="none")
             ).mean()
 
         elif self.masking_rate and self.masking_strategy == "gp_to_tf":
@@ -432,28 +564,22 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
                 input_mask, output_mask = _only_activate_gene_program_numpy(
                     inputs, self.encoded_gene_program
                 )
-                input_mask = torch.tensor(input_mask).to(inputs.device)
-                output_mask = torch.tensor(output_mask).to(inputs.device)
-                frac = torch.sum(input_mask).item() / (
-                    input_mask.shape[0] * input_mask.shape[1]
-                )
                 # log the fraction of genes masked
                 self.log("frac_genes_masked", frac)
             # upscale inputs to compensate for masking
-            masked_inputs = 1.0 / (1.0 - frac) * (inputs * input_mask.to(inputs.device))
-            proteins = proteins.to(targets.device)
-            masked_inputs = torch.cat((masked_inputs, proteins), dim=1)
-            targets = torch.cat((targets, proteins), dim=1)
+            masked_inputs = (
+                1.0
+                / (1.0 - frac)
+                * (inputs * torch.tensor(input_mask).to(inputs.device))
+            )
             x_latent, x_reconst = self(masked_inputs)
-            output_mask = torch.cat((output_mask, proteins), dim=1)
             # calculate masked loss only on the output_mask part of the reconstruction
+            inv_output_mask = torch.abs(
+                torch.ones(output_mask.size()).to(targets.device) - output_mask
+            )
             loss = (
-                torch.tensor(output_mask[:, : self.n_genes]).to(inputs.device)
-                * self._calc_reconstruction_loss(
-                    x_reconst[:, : self.n_genes],
-                    targets[:, : self.n_genes],
-                    reduction="none",
-                )
+                torch.tensor(inv_output_mask).to(inputs.device)
+                * self._calc_reconstruction_loss(x_reconst, targets, reduction="none")
             ).mean()
 
         # raise error if masking rate is not none but masking strategy is not implemented
@@ -484,30 +610,24 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
         return self.encoder(batch["X"])
 
     def forward(self, x_in):
-        covariate = x_in[:, self.n_genes + self.n_proteins :]
-        x = x_in
-        for i in range(0, len(self.encoder)):
-            if (i % 4 == 0) & (i != 0):
-                x = torch.cat((x, covariate), dim=1)
-                x = self.encoder[i](x)
-            else:
-                x = self.encoder[i](x)
-        x_latent = x
-        for i in range(0, len(self.decoder)):
-            if i % 4 == 0:
-                x = torch.cat((x, covariate), dim=1)
-                x = self.decoder[i](x)
-            else:
-                x = self.decoder[i](x)
-        x_reconst = x
+        x_latent = self.encoder(x_in)
+        x_reconst = self.decoder(x_latent)
         return x_latent, x_reconst
 
     def training_step(self, batch, batch_idx):
+        if self.supervised_subset is not None:
+            mask = batch["dataset_id"] == self.supervised_subset
+            if not any(mask):
+                return  # Skip the batch if no items match the condition
+
+            # Filter the batch based on the mask
+            batch = {key: value[mask] for key, value in batch.items()}
         x_reconst, loss = self._step(batch)
-        # to do add hvg here!
-        if self.multiomics_indices is not None and batch["X"].shape[1] == 19331:
+        if self.multiomics_indices is not None:
             batch["X"] = batch["X"][:, self.multiomics_indices]
-        # self.log_dict(self.train_metrics(x_reconst, batch['X']), on_epoch=True, on_step=True)
+        self.log_dict(
+            self.train_metrics(x_reconst, batch["X"]), on_epoch=True, on_step=True
+        )
         self.log("train_loss", loss, on_epoch=True, on_step=True)
         if batch_idx % self.gc_freq == 0:
             gc.collect()
@@ -515,20 +635,32 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        if self.supervised_subset is not None:
+            mask = batch["dataset_id"] == self.supervised_subset
+            if not any(mask):
+                return  # Skip the batch if no items match the condition
+
+            # Filter the batch based on the mask
+            batch = {key: value[mask] for key, value in batch.items()}
         x_reconst, loss = self._step(batch, training=False)
-        if self.multiomics_indices is not None and batch["X"].shape[1] == 19331:
+        if self.multiomics_indices is not None:
             batch["X"] = batch["X"][:, self.multiomics_indices]
-        # self.log_dict(self.val_metrics(x_reconst, batch['X']))
+        self.log_dict(self.val_metrics(x_reconst, batch["X"]))
         self.log("val_loss", loss)
         if batch_idx % self.gc_freq == 0:
             gc.collect()
 
     def test_step(self, batch, batch_idx):
+        if self.supervised_subset is not None:
+            mask = batch["dataset_id"] == self.supervised_subset
+            if not any(mask):
+                return  # Skip the batch if no items match the condition
+
+            # Filter the batch based on the mask
+            batch = {key: value[mask] for key, value in batch.items()}
         x_reconst, loss = self._step(batch, training=False)
-        if self.multiomics_indices is not None and batch["X"].shape[1] == 19331:
+        if self.multiomics_indices is not None:
             batch["X"] = batch["X"][:, self.multiomics_indices]
-        if batch["X"].dim() == 3:
-            batch["X"] = batch["X"].squeeze(1)
         metrics = self.test_metrics(x_reconst, batch["X"])
         self.log_dict(metrics)
         self.log("test_loss", loss)
@@ -540,13 +672,23 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
         return F.softmax(self(x)[0], dim=1)
 
     def predict_step(self, batch, batch_idx, dataloader_idx=None):
-        x_reconst, loss = self._step(batch, training=False)
-        x_true = batch["X"]
-        if self.multiomics_indices is not None:
-            x_true = x_true[:, self.multiomics_indices]
+        if self.supervised_subset is not None:
+            mask = batch["dataset_id"] == self.supervised_subset
+            if not any(mask):
+                return  # Skip the batch if no items match the condition
+
+            # Filter the batch based on the mask
+            batch = {key: value[mask] for key, value in batch.items()}
+
         if batch_idx % self.gc_freq == 0:
             gc.collect()
-        return x_true, x_reconst
+
+        if hasattr(self, "predict_embedding") and self.predict_embedding:
+            return self.encoder(batch["X"]).detach()
+
+        else:
+            x_reconst, _ = self._step(batch, training=False)
+            return x_reconst
 
     def get_input(self, batch):
         if self.multiomics_indices is not None:
@@ -554,115 +696,257 @@ class OldMLPAutoEncoder(BaseAutoEncoder):
         return batch["X"]
 
 
-"""### main class of negative binomial autoencoder"""
-
-
-class FG_BG_MultiomicsAutoencoder(pl.LightningModule):
-    """
-    A PyTorch Lightning module for a multiomics autoencoder.
-
-    Args:
-        n_genes (int): Number of genes.
-        n_proteins (int): Number of proteins.
-        n_batches (int): Number of batches.
-        n_hidden (int): Number of hidden units.
-        n_latent (int): Dimension of the latent space.
-        batch_size (int): Batch size.
-        learning_rate (float): Learning rate for optimization.
-        dropout (float): Dropout rate.
-        weight_decay (float): Weight decay for regularization.
-        gc_frequency (int): Frequency of garbage collection.
-        masking_rate (float): Rate of masking for input data.
-        encoded_gene_program (str): Encoded gene program.
-
-    Attributes:
-        n_genes (int): Number of genes.
-        n_proteins (int): Number of proteins.
-        n_batches (int): Number of batches.
-        n_hidden (int): Number of hidden units.
-        n_latent (int): Dimension of the latent space.
-        batch_size (int): Batch size.
-        dropout (float): Dropout rate.
-        lr (float): Learning rate for optimization.
-        wd (float): Weight decay for regularization.
-        gc_freq (int): Frequency of garbage collection.
-        masking_rate (float): Rate of masking for input data.
-        encoded_gene_program (str): Encoded gene program.
-        encoder (nn.Sequential): Encoder network.
-        decoder (nn.Sequential): Decoder network.
-        multiomics_indices (list): List of gene indices.
-
-    Methods:
-        forward(x): Forward pass of the autoencoder.
-        _calc_reconstruction_loss(fg_mu, fg_theta, bg_mu, bg_theta, protein_preds, gene_targets, protein_targets):
-            Calculate the reconstruction loss.
-        _step(batch, training=True): Perform a single step of the autoencoder.
-        _fn(warmup_steps, step): Warmup decay function.
-        _linear_warmup_decay(warmup_steps): Linear warmup decay function.
-        training_step(batch, batch_idx): Training step of the autoencoder.
-        validation_step(batch, batch_idx): Validation step of the autoencoder.
-    """
-
+class VAE(MLPAutoEncoder):
     def __init__(
         self,
-        n_genes=2000,
-        n_proteins=134,
-        n_batches=12,
-        n_hidden=256,
-        n_latent=40,
-        batch_size=256,
-        learning_rate=1e-05,
-        dropout=0.2,
-        weight_decay=1e-04,
-        gc_frequency=5,
-        masking_rate=0.5,
-        warmup_epochs=10,
-        n_data=90261,  # NeurIPS dataset
-        encoded_gene_program=None,
+        units_encoder: List[int],
+        vae_type: str = "simple_vae",  # Choose between 'simple_vae' and 'scvi_vae'
+        **kwargs,
     ):
-        super().__init__()
-        self.save_hyperparameters()
+        super(VAE, self).__init__(units_encoder=units_encoder, **kwargs)
 
-        self.n_genes = n_genes
-        self.n_proteins = n_proteins
-        self.n_batches = n_batches
-        self.n_hidden = n_hidden
-        self.n_latent = n_latent
+        self.vae_type = vae_type
+        self.latent_dim = self.encoder[-1].out_features
+        self.decoder[0].in_channels = self.latent_dim
+
+        # Modify encoder to output both mean and log_var
+        self.encoder_mu = nn.Linear(self.encoder[-1].out_features, self.latent_dim)
+        self.encoder_log_var = nn.Linear(self.encoder[-1].out_features, self.latent_dim)
+
+        # For scVI-style VAE
+        if self.vae_type == "scvi_vae":
+            self.encoder_pi = nn.Linear(
+                self.latent_dim, self.encoder[0].in_features
+            )  # from 64 to 2000
+            self.encoder_theta = nn.Linear(
+                self.latent_dim, self.encoder[0].in_features
+            )  # from 64 to 2000
+
+        # Modify decoder to take latent_dim as input
+        self.decoder[0].in_channels = self.latent_dim
+
+    def reparameterize(self, mu, log_var):
+        """
+        Reparameterization trick to sample from N(mu, std) from N(0,1).
+        """
+        std = torch.exp(0.5 * log_var)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def zinb_loss(self, y_true, y_pred, pi, theta):
+        """
+        Zero-inflated negative binomial loss.
+        """
+        nb_term = (
+            torch.lgamma(theta + y_true)
+            - torch.lgamma(y_true + 1)
+            - torch.lgamma(theta)
+        )
+        nb_term += theta * (torch.log(theta) - torch.log(theta + y_pred)) + y_true * (
+            torch.log(y_pred) - torch.log(theta + y_pred)
+        )
+        zero_term = torch.log(
+            pi + (1 - pi) * torch.pow(theta / (theta + y_pred), theta)
+        )
+        return -torch.sum(zero_term + torch.logaddexp(torch.log(1 - pi), nb_term))
+
+    def invert_sf_log1p_norm(self, x_norm):
+        """
+        Invert the log1p and scaling factor normalization
+        """
+        x_exp = torch.expm1(x_norm)  # inverse of log1p
+        scaling_factor = 10000.0 / torch.sum(x_exp, axis=1, keepdim=True)
+        x_raw = x_exp / scaling_factor
+        return x_raw
+
+    def forward(self, x_in):
+        x_encoded = self.encoder(x_in)
+
+        mu = self.encoder_mu(x_encoded)
+        log_var = self.encoder_log_var(x_encoded)
+
+        z = self.reparameterize(mu, log_var)
+
+        if self.vae_type == "scvi_vae":
+            pi = self.encoder_pi(x_encoded)
+            theta = self.encoder_theta(x_encoded)
+        else:
+            pi, theta = None, None
+
+        x_reconst = self.decoder(z)
+
+        if self.vae_type == "scvi_vae":
+            x_reconst_inverted = self.invert_sf_log1p_norm(x_reconst)
+        else:
+            x_reconst_inverted = x_reconst
+
+        return z, x_reconst_inverted, mu, log_var, pi, theta
+
+    def _step(self, batch, training=True):
+        if self.multiomics_indices is not None:
+            x_in = batch["X"][:, self.multiomics_indices]
+        else:
+            x_in = batch["X"]
+        z, x_reconst_inverted, mu, log_var, pi, theta = self.forward(x_in)
+        targets = x_in
+
+        if self.vae_type == "simple_vae":
+            reconst_loss = self._calc_reconstruction_loss(x_reconst_inverted, targets)
+        else:  # scvi_vae
+            reconst_loss = self.zinb_loss(targets, x_reconst_inverted, pi, theta)
+
+        kl_divergence = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
+
+        self.log("kl_divergence", kl_divergence, on_epoch=True)
+
+        loss = reconst_loss + kl_divergence
+
+        return x_reconst_inverted, loss
+
+
+class MLPClassifier(BaseClassifier):
+    def __init__(
+        self,
+        # fixed params
+        gene_dim: int,
+        type_dim: int,
+        class_weights: np.ndarray,
+        child_matrix: np.ndarray,
+        units: List[int],
+        # params from datamodule
+        batch_size: int,
+        # model specific params
+        supervised_subset: Optional[int] = None,
+        dropout: float = 0.0,
+        learning_rate: float = 0.005,
+        weight_decay: float = 0.1,
+        optimizer: Callable[..., torch.optim.Optimizer] = torch.optim.AdamW,
+        lr_scheduler: Callable = None,
+        lr_scheduler_kwargs: Dict = None,
+    ):
+        super(MLPClassifier, self).__init__(
+            gene_dim=gene_dim,
+            type_dim=type_dim,
+            class_weights=class_weights,
+            child_matrix=child_matrix,
+            batch_size=batch_size,
+            supervised_subset=supervised_subset,
+            learning_rate=learning_rate,
+            weight_decay=weight_decay,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            lr_scheduler_kwargs=lr_scheduler_kwargs,
+        )
+
+        self.classifier = MLP(
+            in_channels=gene_dim,
+            hidden_channels=units + [type_dim],
+            dropout=dropout,
+            inplace=False,
+        )
+
+    def _step(self, batch, training=True):
+        logits = self(batch["X"])
+        with torch.no_grad():
+            preds = torch.argmax(logits, dim=1)
+            preds_corrected, targets_corrected = self.hierarchy_correct(
+                preds, batch["cell_type"]
+            )
+        if training:
+            loss = F.cross_entropy(
+                logits, batch["cell_type"], weight=self.class_weights
+            )
+        else:
+            loss = F.cross_entropy(logits, targets_corrected)
+
+        return preds_corrected, loss
+
+    def predict_step(self, batch, batch_idx, dataloader_idx=None):
+        if batch_idx % self.gc_freq == 0:
+            gc.collect()
+        if hasattr(self, "predict_embedding") and self.predict_embedding:
+            return self.classifier[:12](
+                batch["X"]
+            ).detach()  # Get embeddings up to layer 12
+        else:
+            return F.softmax(self(batch["X"]), dim=1)
+
+    def forward_embedding(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Forward pass to compute the embedding from the MLP.
+        The computed embedding is the output before the last Linear layer of the MLP.
+        """
+        for i, layer in enumerate(self.classifier):
+            x = layer(x)
+            if i == len(self.classifier) - 2:
+                break
+        return x
+
+    def predict_embedding(self, batch, batch_idx, dataloader_idx=None) -> torch.Tensor:
+        """
+        Function to predict the embedding from the given batch.
+        """
+        x = batch["X"]
+        return self.forward_embedding(x)
+
+
+class MLPBYOL(BaseAutoEncoder):
+    def __init__(
+        self,
+        # fixed params
+        gene_dim: int,
+        units_encoder: List[int],
+        # params from datamodule
+        batch_size: int,
+        # contrastive learning params
+        backbone: str,  # MLP, TabNet
+        augment_type: str,  # Gaussian, Uniform
+        augment_intensity: float,
+        use_momentum: bool,
+        # model specific params
+        lr: float = 0.005,
+        weight_decay: float = 0.1,
+        dropout: float = 0.1,
+        optimizer: Callable[..., torch.optim.Optimizer] = torch.optim.AdamW,
+        lr_scheduler: Callable = None,
+        lr_scheduler_kwargs: Dict = None,
+        activation: Callable[[], torch.nn.Module] = nn.SELU,
+    ):
+        # check input
+        assert 0.0 <= dropout <= 1.0
+
         self.batch_size = batch_size
+
+        super(MLPBYOL, self).__init__(
+            gene_dim=gene_dim,
+            batch_size=batch_size,
+            learning_rate=lr,
+            weight_decay=weight_decay,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            lr_scheduler_kwargs=lr_scheduler_kwargs,
+        )
+
+        # assign inner model, that will be trained using the BYOL / SimSiam framework
+        self.backbone = backbone
+        self.gene_dim = gene_dim
+        self.units_encoder = units_encoder
+        self.activation = activation
         self.dropout = dropout
-        self.lr = learning_rate
-        self.wd = weight_decay
-        self.gc_freq = gc_frequency
-        self.masking_rate = masking_rate
-        self.encoded_gene_program = encoded_gene_program
-        self.warmup_epochs = warmup_epochs
-        self.train_iters_per_epoch = n_data // self.batch_size
+        self.inner_model = self._get_inner_model()
 
-        # Encoder
-        self.encoder = nn.Sequential(
-            nn.Linear(
-                in_features=self.n_genes + self.n_proteins + self.n_batches,
-                out_features=self.n_hidden,
-            ),
-            nn.BatchNorm1d(self.n_hidden),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout),
-            nn.Linear(in_features=self.n_hidden, out_features=self.n_latent),
+        self.byol = BYOL(
+            net=self.inner_model,
+            image_size=self.gene_dim,
+            augment_type=augment_type,
+            augment_intensity=augment_intensity,
+            batch_size=self.batch_size,
+            use_momentum=use_momentum,
         )
 
-        # Decoder for FG and BG gene counts and proteins
-        self.decoder = nn.Sequential(
-            nn.Linear(in_features=self.n_latent, out_features=self.n_hidden),
-            nn.BatchNorm1d(self.n_hidden),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout),
-            nn.Linear(
-                in_features=self.n_hidden,
-                out_features=4 * self.n_genes + self.n_proteins,
-            ),  # FG and BG for genes, plus proteins
-        )
+        # This is so far only used for multiomics
+        # Choose gene indices from NeurIPS dataset in the CellNet data
 
-        # Load gene indices if necessary
         root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         )
@@ -670,306 +954,136 @@ class FG_BG_MultiomicsAutoencoder(pl.LightningModule):
             open(root + "/self_supervision/data/multiomics_indices.pickle", "rb")
         )
 
-    def forward(self, x):
-        """
-        Forward pass of the autoencoder.
-
-        Args:
-            x (torch.Tensor): Input tensor.
-
-        Returns:
-            tuple: Tuple containing the latent representation, foreground gene mean and dispersion,
-                   background gene mean and dispersion, and protein predictions.
-        """
-        x_latent = self.encoder(x)
-        x_reconst = self.decoder(x_latent)
-        # Split output into foreground and background mean and dispersion for genes, and protein predictions
-        fg_mu = F.softplus(x_reconst[:, : self.n_genes])
-        fg_theta = F.softplus(x_reconst[:, self.n_genes : 2 * self.n_genes])
-        bg_mu = F.softplus(x_reconst[:, 2 * self.n_genes : 3 * self.n_genes])
-        bg_theta = F.softplus(x_reconst[:, 3 * self.n_genes : 4 * self.n_genes])
-        protein_preds = x_reconst[:, 4 * self.n_genes :]
-        return x_latent, fg_mu, fg_theta, bg_mu, bg_theta, protein_preds
-
-    def _calc_reconstruction_loss(
-        self,
-        fg_mu,
-        fg_theta,
-        bg_mu,
-        bg_theta,
-        protein_preds,
-        gene_targets,
-        protein_targets,
-    ):
-        """
-        Calculate the reconstruction loss.
-
-        Args:
-            fg_mu (torch.Tensor): Foreground gene mean.
-            fg_theta (torch.Tensor): Foreground gene dispersion.
-            bg_mu (torch.Tensor): Background gene mean.
-            bg_theta (torch.Tensor): Background gene dispersion.
-            protein_preds (torch.Tensor): Protein predictions.
-            gene_targets (torch.Tensor): Ground truth gene targets.
-            protein_targets (torch.Tensor): Ground truth protein targets.
-
-        Returns:
-            torch.Tensor: Total reconstruction loss.
-        """
-        # Negative binomial loss for foreground and background gene counts
-        fg_nb = NegativeBinomial(mu=fg_mu, theta=fg_theta)
-        bg_nb = NegativeBinomial(mu=bg_mu, theta=bg_theta)
-        fg_loss = -fg_nb.log_prob(gene_targets).sum(-1)
-        bg_loss = -bg_nb.log_prob(gene_targets).sum(-1)
-        protein_loss = F.mse_loss(protein_preds, protein_targets, reduction="mean")
-        total_loss = fg_loss + bg_loss + protein_loss
-        return total_loss.mean()
-
-    def _step(self, batch, training=True):
-        """
-        Perform a single step of the autoencoder.
-
-        Args:
-            batch (dict): Input batch containing genes, proteins, and batches.
-            training (bool): Whether the model is in training mode.
-
-        Returns:
-            tuple: Tuple containing the latent representation, foreground gene mean and dispersion,
-                   background gene mean and dispersion, protein predictions, and the total loss.
-        """
-        if isinstance(
-            batch, dict
-        ):  # Assuming batch is a dictionary with keys 'X' for genes and 'protein' for proteins
-            gene = batch["X"]
-            protein = (
-                batch["protein"]
-                if "protein" in batch
-                else torch.zeros(gene.shape[0], self.n_proteins).to(gene.device)
+    def _get_inner_model(self):
+        if self.backbone == "MLP":
+            self.inner_model = MLP(
+                in_channels=self.gene_dim,
+                hidden_channels=self.units_encoder,
+                activation_layer=self.activation,
+                inplace=False,
+                dropout=self.dropout,
             )
-            in_proteins = torch.zeros(gene.shape[0], self.n_proteins).to(
-                gene.device
-            )  # Model input proteins are zeroed
-            in_covariates = torch.zeros(gene.shape[0], self.n_batches).to(
-                gene.device
-            )  # Model input covariates are zeroed
+        elif self.backbone == "TabNet":
+            raise NotImplementedError
         else:
-            raise ValueError(
-                "Batch must be a dictionary with keys 'X', 'protein', and 'batch'."
-            )
+            raise NotImplementedError
+        return self.inner_model
 
-        if gene.dim() == 3:
-            gene = gene.squeeze(1)
+    def _step(self, batch):
+        loss = self.forward(batch)
+        return loss
 
-        if gene.shape[-1] == self.n_genes:
-            pass  # correct gene shape
-        elif gene.shape[-1] > self.n_genes:
-            gene = gene[:, self.multiomics_indices]
-        else:
-            raise ValueError(f"Unsupported gene shape: {gene.shape}")
-
-        inputs = torch.cat((gene, in_proteins, in_covariates), dim=1)
-        x_latent, fg_mu, fg_theta, bg_mu, bg_theta, protein_preds = self(inputs)
-        loss = self._calc_reconstruction_loss(
-            fg_mu, fg_theta, bg_mu, bg_theta, protein_preds, gene, protein
-        )
-
-        return x_latent, (fg_mu, fg_theta, bg_mu, bg_theta, protein_preds), loss
-
-    def _fn(self, warmup_steps, step):
-        """
-        Warmup decay function.
-
-        Args:
-            warmup_steps (int): Number of warmup steps.
-            step (int): Current step.
-
-        Returns:
-            float: Decay factor.
-        """
-        if step < warmup_steps:
-            return float(step) / float(max(1, warmup_steps))
-        else:
-            return 1.0
-
-    def _linear_warmup_decay(self, warmup_steps):
-        """
-        Linear warmup decay function.
-
-        Args:
-            warmup_steps (int): Number of warmup steps.
-
-        Returns:
-            callable: Warmup decay function.
-        """
-        return partial(self._fn, warmup_steps)
-
-    def training_step(self, batch, batch_idx):
-        """
-        Training step of the autoencoder.
-
-        Args:
-            batch (dict): Input batch.
-            batch_idx (int): Batch index.
-
-        Returns:
-            torch.Tensor: Loss value.
-        """
+    def predict_embedding(self, batch, batch_idx):
         if batch_idx % self.gc_freq == 0:
             gc.collect()
-        _, _, loss = self._step(batch)
-        self.log("train_loss", loss, on_epoch=True, on_step=True)
+        return self.encoder(batch["X"])
+
+    def forward(self, batch):
+        if batch["X"].dim() == 3:
+            batch["X"] = batch["X"].squeeze(1)
+        if self.multiomics_indices is not None and batch["X"].shape[-1] == 19357:
+            batch["X"] = batch["X"][:, self.multiomics_indices]
+        return self.byol(batch["X"])
+
+    def training_step(self, batch, batch_idx):
+        loss = self._step(batch)
+        self.log("train_loss", loss, on_epoch=True)
+        if batch_idx % self.gc_freq == 0:
+            gc.collect()
         return loss
 
     def validation_step(self, batch, batch_idx):
-        """
-        Validation step of the autoencoder.
-
-        Args:
-            batch (dict): Input batch.
-            batch_idx (int): Batch index.
-        """
+        loss = self._step(batch)
+        self.log("val_loss", loss)
         if batch_idx % self.gc_freq == 0:
             gc.collect()
-        _, _, loss = self._step(batch, training=False)
-        self.log("val_loss", loss)
-        return loss
 
     def test_step(self, batch, batch_idx):
-        if batch_idx % self.gc_freq == 0:
-            gc.collect()
-        _, _, loss = self._step(batch, training=False)
+        loss = self._step(batch)
         self.log("test_loss", loss)
-        return loss
-
-    def predict_step(self, batch, batch_idx, dataloader_idx=0):
         if batch_idx % self.gc_freq == 0:
             gc.collect()
-        _, preds, loss = self._step(batch, training=False)
-        return preds
 
-    def predict_embedding(self, batch):
-        if self.multiomics_indices is not None:
-            batch["X"] = batch["X"][:, self.multiomics_indices]
-        return self.encoder(batch["X"])
-
-    def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(
-            self.parameters(), lr=self.lr, weight_decay=self.wd
-        )
-        scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer,
-            self._linear_warmup_decay(self.warmup_epochs * self.train_iters_per_epoch),
-        )
-        return [optimizer], [scheduler]
+    def predict_step(self, batch, batch_idx, dataloader_idx: Optional[int] = None):
+        x_reconst, loss = self(batch)
+        if batch_idx % self.gc_freq == 0:
+            gc.collect()
+        return x_reconst
 
 
-"""### main class of masked autoencoder"""
+# helper
+class DictAsAttributes:
+    def __init__(self, dictionary):
+        self.__dict__.update(dictionary)
 
 
-class MultiomicsAutoencoder(pl.LightningModule):
+class MLPBarlowTwins(BaseAutoEncoder):
     def __init__(
         self,
-        mode,  # 'pre_training','fine_tuning','no_mask'
-        model,  # 'MAE','BT','BYOL'
-        model_type="autoencoder",
-        n_genes=2000,
-        n_proteins=134,
-        n_batches=12,
-        n_hidden=256,
-        n_latent=40,
-        batch_size=256,
-        n_data=90261,
-        intensity: Optional[float] = 0.0001,
-        lambda_coeff: Optional[float] = 0.0051,
-        n_projector_dim: Optional[int] = 512,
-        masking_rate: Optional[float] = 0.5,
-        masking_strategy: Optional[str] = None,  # 'random', 'gene_program','gp_to_tf'
-        encoded_gene_program: Optional[list] = None,
-        learning_rate=1e-05,
-        dropout=0.2,
-        weight_decay=1e-04,
-        gc_frequency: int = 5,
+        # fixed params
+        gene_dim: int,
+        # params from datamodule
+        train_set_size: int,
+        batch_size: int,
+        # contrastive learning params
+        CHECKPOINT_PATH: str,
+        backbone: str,  # MLP, TabNet
+        augment_intensity: float,
+        units_encoder: List[int] = [256, 256, 40],
+        learning_rate_weights: float = 0.2,
+        learning_rate_biases: float = 0.0048,
+        lambd: float = 0.0051,
+        lr: float = 0.005,  # dummy here
+        weight_decay: float = 1e-6,
+        dropout: float = 0.0,
+        optimizer: Callable[..., torch.optim.Optimizer] = torch.optim.AdamW,
+        lr_scheduler: Callable = None,  # dummy here
+        lr_scheduler_kwargs: Dict = None,  # dummy here
+        activation: Callable[[], torch.nn.Module] = nn.SELU,
+        mode: str = "cellnet",  # cellnet or multiomics
     ):
-        super().__init__()
-        self.save_hyperparameters()
-        self.n_genes = n_genes
-        self.n_proteins = n_proteins
-        self.n_batches = n_batches
-        self.n_hidden = n_hidden
-        self.n_latent = n_latent
-        self.batch_size = batch_size
-        self.n_projector_dim = n_projector_dim
-        self.reconst_loss = "mse"
-        self.dropout = dropout
-        self.lr = learning_rate
-        self.wd = weight_decay
-        self.mode = mode
-        self.model = model
-        self.lambda_coeff = lambda_coeff
-        self.model_type = model_type
-        self.gc_freq = gc_frequency
-        self.encoder = nn.Sequential(
-            nn.Linear(
-                in_features=self.n_genes + self.n_proteins + self.n_batches,
-                out_features=self.n_hidden,
-            ),
-            nn.BatchNorm1d(self.n_hidden),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout),
-            nn.Linear(
-                in_features=self.n_hidden + self.n_batches, out_features=self.n_hidden
-            ),
-            nn.BatchNorm1d(self.n_hidden),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout),
-            nn.Linear(
-                in_features=self.n_hidden + self.n_batches, out_features=self.n_latent
-            ),
-        )
-        self.decoder = nn.Sequential(
-            nn.Linear(
-                in_features=self.n_latent + self.n_batches, out_features=self.n_hidden
-            ),
-            nn.BatchNorm1d(self.n_hidden),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout),
-            nn.Linear(
-                in_features=self.n_hidden + self.n_batches, out_features=self.n_hidden
-            ),
-            nn.BatchNorm1d(self.n_hidden),
-            nn.ReLU(),
-            nn.Dropout(p=self.dropout),
-            nn.Linear(
-                in_features=self.n_hidden + n_batches,
-                out_features=self.n_genes + self.n_proteins + self.n_batches,
-            ),
-        )
-        self.projector = nn.Sequential(
-            nn.Linear(
-                in_features=self.n_latent + self.n_batches, out_features=self.n_latent
-            ),
-            nn.BatchNorm1d(self.n_latent),
-            nn.ReLU(),
-            nn.Linear(
-                in_features=self.n_latent + self.n_batches, out_features=self.n_latent
-            ),
-            nn.BatchNorm1d(self.n_latent),
-            nn.ReLU(),
-            nn.Linear(
-                in_features=self.n_latent + self.n_batches,
-                out_features=self.n_projector_dim,
-                bias=False,
-            ),
-            nn.BatchNorm1d(self.n_projector_dim),
-            nn.ReLU(),
-            nn.Linear(
-                in_features=self.n_projector_dim + self.n_batches,
-                out_features=self.n_projector_dim,
-                bias=False,
-            ),
+        # check input
+        assert 0.0 <= dropout <= 1.0
+
+        super(MLPBarlowTwins, self).__init__(
+            gene_dim=gene_dim,
+            train_set_size=train_set_size,
+            batch_size=batch_size,
+            learning_rate=lr,
+            weight_decay=weight_decay,
+            optimizer=optimizer,
+            lr_scheduler=lr_scheduler,
+            lr_scheduler_kwargs=lr_scheduler_kwargs,
+            automatic_optimization=False,
         )
 
-        # Choose gene indices from NeurIPS dataset in the CellNet data
+        self.save_hyperparameters(ignore=["gene_dim"])
+
+        self.best_val_loss = np.inf
+        self.best_train_loss = np.inf
+        self.mode = mode
+        self.train_set_size = train_set_size
+        self.batch_size = batch_size
+        self.weight_decay = weight_decay
+        self.learning_rate_weights = learning_rate_weights
+        self.learning_rate_biases = learning_rate_biases
+        self.lambd = lambd
+
+        self.loader_length = self.train_set_size // self.batch_size
+
+        self.step = 0  # for optimizer
+
+        # assign inner model, that will be trained using the BYOL / SimSiam framework
+        self.backbone = backbone
+        self.gene_dim = gene_dim
+        self.units_encoder = units_encoder
+        self.activation = activation
+        self.dropout = dropout
+        self.batch_size = batch_size
+
+        self.transform = Transform(p=augment_intensity)
+        self.CHECKPOINT_PATH = CHECKPOINT_PATH
+
         root = os.path.dirname(
             os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         )
@@ -977,311 +1091,181 @@ class MultiomicsAutoencoder(pl.LightningModule):
             open(root + "/self_supervision/data/multiomics_indices.pickle", "rb")
         )
 
-        self.train_iters_per_epoch = n_data // self.batch_size
-        self.warmup_epochs = 10
-        self.transform = Transform(p=intensity)
-        self.masking_rate = masking_rate
-        self.masking_strategy = masking_strategy
-        self.encoded_gene_program = encoded_gene_program
+        # This is so far only used for multiomics
+        # Choose gene indices from NeurIPS dataset in the CellNet data
 
-    def forward(self, x):
-        x = x.to(self.device)
-        covariate = x[:, self.n_genes + self.n_proteins :]
-        for i in range(0, len(self.encoder)):
-            if (i % 4 == 0) & (i != 0):
-                x = torch.cat((x, covariate), dim=1)
-                x = self.encoder[i](x)
-            else:
-                x = self.encoder[i](x)
-        x_latent = x
-        for i in range(0, len(self.decoder)):
-            if i % 4 == 0:
-                x = torch.cat((x, covariate), dim=1)
-                x = self.decoder[i](x)
-            else:
-                x = self.decoder[i](x)
-        x_reconst = x
-        return x_latent, x_reconst
+        inner_model = self._get_inner_model()
 
-    def _calc_reconstruction_loss(
-        self, preds: torch.Tensor, targets: torch.Tensor, reduction: str = "mean"
-    ):
-        if self.reconst_loss == "continuous_bernoulli":
-            loss = -ContinuousBernoulli(probs=preds).log_prob(targets)
-            if reduction == "mean":
-                loss = loss.mean()
-            elif reduction == "sum":
-                loss = loss.sum()
-        elif self.reconst_loss == "bce":
-            loss = F.binary_cross_entropy(preds, targets, reduction=reduction)
-        elif self.reconst_loss == "mae":
-            loss = F.l1_loss(preds, targets, reduction=reduction)
+        # Initialize the model-specific parameters
+        self.dropout = dropout
+        self.activation = activation
+        self.units_encoder = units_encoder
+        self.barlow_twins = self._get_barlow_twins_model(inner_model)
+
+    def _get_barlow_twins_model(self, inner_model):
+        args = (
+            self._prepare_barlow_twins_args()
+        )  # Prepare the Barlow Twins arguments (use the relevant params)
+        self.barlow_twins = BarlowTwins(
+            backbone=inner_model, args=args, mode=self.mode, dropout=self.dropout
+        )
+        return self.barlow_twins
+
+    def _get_inner_model(self):
+        if self.mode == "multiomics":
+            n_genes = 2000
+            n_proteins = 134
+            n_batches = 12
+            n_hidden = 256
+            dropout = self.dropout
+            n_latent = 40
+            self.inner_model = nn.Sequential(
+                nn.Linear(
+                    in_features=n_genes + n_proteins + n_batches, out_features=n_hidden
+                ),
+                nn.BatchNorm1d(n_hidden),
+                nn.ReLU(),
+                nn.Dropout(p=dropout),
+                nn.Linear(in_features=n_hidden + n_batches, out_features=n_hidden),
+                nn.BatchNorm1d(n_hidden),
+                nn.ReLU(),
+                nn.Dropout(p=dropout),
+                nn.Linear(in_features=n_hidden + n_batches, out_features=n_latent),
+            )
+
+        elif self.backbone == "MLP":
+            self.inner_model = MLP(
+                in_channels=self.gene_dim,
+                hidden_channels=self.units_encoder,
+                activation_layer=self.activation,
+                inplace=False,
+                dropout=self.dropout,
+            )
         else:
-            loss = F.mse_loss(preds, targets, reduction=reduction)
+            raise NotImplementedError
+        return self.inner_model
+
+    def _prepare_barlow_twins_args(self):
+        # Prepare Barlow Twins arguments based on the required parameters
+        args = {
+            # 'data': ...,  # Path to your dataset directory (from class B)
+            # 'workers': 8,  # number of data loader workers
+            "epochs": 1000,  # number of total epochs to run
+            "batch_size": self.batch_size,  # mini-batch size
+            "learning_rate_weights": self.learning_rate_weights,  # base learning rate for weights
+            "learning_rate_biases": self.learning_rate_biases,
+            # base learning rate for biases and batch norm parameters
+            "weight-decay": self.weight_decay,  # weight decay
+            "lambd": self.lambd,  # weight on off-diagonal terms
+            "projector": "256-256-512-512",  # projector MLP
+            # 'print_freq': 100,  # print frequency
+            # 'checkpoint_dir': './checkpoint/'  # path to checkpoint directory
+        }
+        self.args = DictAsAttributes(args)
+        return self.args
+
+    def _step(self, batch):
+        if self.mode == "multiomics":
+            device = torch.device(
+                "cuda"
+                if torch.cuda.is_available()
+                else ("mps" if torch.backends.mps.is_available() else "cpu")
+            )
+            gene = batch["X"].to(device)
+            mask_all_protein = torch.zeros(gene.shape[0], 134).to(device)
+            covariate = batch["batch"].to(device)
+            x_in = torch.cat((gene, mask_all_protein, covariate), dim=1)
+        else:
+            # For Multiomics, batch['X'] has additional dim to squeeze
+            if batch["X"].dim() == 3:
+                batch["X"] = batch["X"].squeeze(1)
+            if self.multiomics_indices is not None and batch["X"].shape[-1] == 19357:
+                x_in = batch["X"][:, self.multiomics_indices]
+            elif self.multiomics_indices is not None and batch["X"].shape[-1] == 19331:
+                x_in = batch["X"][:, self.multiomics_indices]
+            else:
+                x_in = batch["X"]
+        # Modify the forward pass to use the Barlow Twins model (from class B)
+        loss = self(x_in)
         return loss
 
-    def _step(self, batch, training=True):
-        # if protein is not a key of batch (in RNA-seq data), initialize protein and batch as zeros
-        if isinstance(batch, tuple):  # Pretraining - mask protein
-            gene = batch[0]["X"]
-            protein = torch.zeros(gene.shape[0], 134).to(gene.device)
-            covariate = torch.zeros(gene.shape[0], 12).to(gene.device)
-        elif isinstance(batch, dict):
-            if "protein" not in batch.keys():  # Pretraining - mask protein
-                gene = batch["X"]
-                protein = torch.zeros(gene.shape[0], 134).to(gene.device)
-                covariate = torch.zeros(gene.shape[0], 12).to(gene.device)
-            else:  # Fine-tuning - don't mask protein
-                gene = batch["X"]
-                protein = batch["protein"]
-                covariate = batch["batch"]
-        else:
-            raise ValueError("Unsupported batch type: " + str(type(batch)))
+    def predict_embedding(self, batch, batch_idx):
+        if batch_idx % self.gc_freq == 0:
+            gc.collect()
+        return self.encoder(batch["X"])
 
-        if gene.dim() == 3:
-            gene = gene.squeeze(1)
-
-        if gene.shape[-1] == 2000:  # NeurIPS data
-            # Don't change shape
-            pass
-        elif gene.shape[-1] == 19331:  # CellNet data
-            # Check Ranges of Indices: Ensure all values within the list self.multiomics_indices are within valid range i.e., [0, gene.shape[1]-1].
-            # assert self.multiomics_indices.max().item() < gene.shape[1], "Index out of range"
-            # assert self.multiomics_indices.min().item() >= 0, "Index out of range"
-
-            assert max(self.multiomics_indices) < gene.shape[1], "Index out of range"
-            assert min(self.multiomics_indices) >= 0, "Index out of range"
-
-            torch.cuda.synchronize()
-            gene = gene[:, self.multiomics_indices]
-            torch.cuda.synchronize()
-        else:
-            raise ValueError("Unsupported gene shape: " + str(gene.shape))
-
-        mask_all_protein = torch.zeros_like(protein)
-
-        if (
-            self.model == "MAE"
-            and self.mode == "pre_training"
-            and self.masking_strategy == "random"
-        ):
-            mask = (
-                Bernoulli(probs=1.0 - self.masking_rate)
-                .sample(gene.size())
-                .to(gene.device)
-            )
-            assert torch.all(
-                (mask == 0) | (mask == 1)
-            ), "mask contains values other than 0 or 1"
-
-            # upscale inputs to compensate for masking and convert to same device
-            # masked_genes = 1. / (1. - self.masking_rate) * (gene * (1-mask))
-            masked_genes = (
-                1.0 / (1.0 - self.masking_rate) * (gene * mask)
-            )  # batch_size x 2000
-            # print('masked genes: ', masked_genes.shape)
-            masked_inputs = torch.cat(
-                (masked_genes, mask_all_protein, covariate), dim=1
-            )  # batch_size x 2146
-            # print('masked inputs: ', masked_inputs.shape)
-            x_latent, x_reconst = self(masked_inputs)  # x_reconst batch_size x 2146
-            # print('x reconst: ', x_reconst.shape)
-            # print('gene: ', gene.shape)
-            # print('x reconst of genes: ', x_reconst[:,:self.n_genes].shape)
-            # calculate masked loss on masked part only
-            # IDEA: Maybe not the first self.n_genes but the multiomics indices?
-
-            inv_mask = torch.abs(torch.ones(mask.size()).to(gene.device) - mask)
-            # calculate masked loss
-            loss = (
-                inv_mask
-                * self._calc_reconstruction_loss(
-                    x_reconst[:, : self.n_genes], gene, reduction="none"
-                )
-            ).mean()
-
-        elif (
-            self.model == "MAE"
-            and self.mode == "pre_training"
-            and self.masking_strategy == "gene_program"
-        ):
-            with torch.no_grad():
-                mask, masking_rate = _mask_gene_programs_numpy(
-                    inputs=gene,
-                    encoded_gene_program=self.encoded_gene_program,
-                    masking_rate=self.masking_rate,
-                )
-                mask = torch.tensor(mask).to(gene.device)
-                # log the fraction of genes masked
-                self.log("frac_genes_masked", masking_rate.astype(np.float32))
-                assert torch.all(
-                    (mask == 0) | (mask == 1)
-                ), "mask contains values other than 0 or 1"
-
-            # upscale inputs to compensate for masking
-            # masked_genes = 1. / (1. - masking_rate) * (gene * (1-mask))
-            # get number of ones per cell in mask
-            masked_genes = 1.0 / (1.0 - self.masking_rate) * (gene * mask)
-            # print('Masked genes: ', masked_genes.shape)
-            masked_inputs = torch.cat(
-                (masked_genes, mask_all_protein, covariate), dim=1
-            )
-            # print('Masked inputs: ', masked_inputs.shape)
-            x_latent, x_reconst = self.forward(masked_inputs)
-            # calculate masked loss
-            inv_mask = torch.abs(torch.ones(mask.size()).to(gene.device) - mask)
-            loss = (
-                inv_mask
-                * self._calc_reconstruction_loss(
-                    x_reconst[:, : self.n_genes], gene, reduction="none"
-                )
-            ).mean()
-        elif (
-            self.model == "MAE"
-            and self.mode == "pre_training"
-            and self.masking_strategy == "gp_to_tf"
-        ):
-            with torch.no_grad():
-                # self.encoded gene program is a Dict of encoded gene programs and the corresponding tf indices
-                input_mask, output_mask = _only_activate_gene_program_numpy(
-                    gene, self.encoded_gene_program
-                )
-                input_mask = torch.tensor(input_mask).to(gene.device)
-                frac = torch.sum(input_mask).item() / (
-                    input_mask.shape[0] * input_mask.shape[1]
-                )
-                output_mask = torch.tensor(output_mask).to(gene.device)
-                # log the fraction of genes masked
-                # self.log('frac_genes_masked', frac)
-            # upscale inputs to compensate for masking
-            masked_genes = 1.0 / (1.0 - frac) * (gene * (1 - input_mask))
-            masked_genes = masked_genes
-            masked_inputs = torch.cat(
-                (masked_genes, mask_all_protein, covariate), dim=1
-            )
-            x_latent, x_reconst = self.forward(masked_inputs)
-            # calculate masked loss
-            loss = (
-                output_mask
-                * self._calc_reconstruction_loss(
-                    x_reconst[:, : self.n_genes], gene, reduction="none"
-                )
-            ).mean()
-        elif (
-            self.model == "MAE"
-            and self.mode == "pre_training"
-            and self.masking_strategy == "gp_to_gp"
-        ):
-            with torch.no_grad():
-                # self.encoded gene program is a Dict of encoded gene programs and the corresponding tf indices
-                input_mask, output_mask = _only_activate_gene_program_numpy(
-                    gene, self.encoded_gene_program
-                )
-                input_mask = torch.tensor(input_mask).to(gene.device)
-                frac = torch.sum(input_mask).item() / (
-                    input_mask.shape[0] * input_mask.shape[1]
-                )
-                output_mask = torch.tensor(output_mask).to(gene.device)
-                # log the fraction of genes masked
-                # self.log('frac_genes_masked', frac)
-            # upscale inputs to compensate for masking
-            masked_genes = 1.0 / (1.0 - frac) * (gene * (1 - input_mask))
-            masked_genes = masked_genes
-            masked_inputs = torch.cat(
-                (masked_genes, mask_all_protein, covariate), dim=1
-            )
-            x_latent, x_reconst = self.forward(masked_inputs)
-            # calculate masked loss
-            loss = (
-                input_mask
-                * self._calc_reconstruction_loss(
-                    x_reconst[:, : self.n_genes], gene, reduction="none"
-                )
-            ).mean()
-
-        elif self.mode == "fine_tuning":
-            inputs = torch.cat((gene, mask_all_protein, covariate), dim=1)
-            x_latent, x_reconst = self.forward(inputs)
-            loss = self._calc_reconstruction_loss(
-                x_reconst[:, self.n_genes : self.n_genes + self.n_proteins],
-                protein,
-                reduction="none",
-            ).mean()
-        else:
-            raise ValueError(
-                "Please choose either full_run or fine-tuning or a masking strategy for pre-training. "
-                "You chose " + self.mode + " and " + self.masking_strategy
-            )
-
-        return x_latent, x_reconst, loss
-
-    def _fn(self, warmup_steps, step):
-        if step < warmup_steps:
-            return float(step) / float(max(1, warmup_steps))
-        else:
-            return 1.0
-
-    def _linear_warmup_decay(self, warmup_steps):
-        return partial(self._fn, warmup_steps)
+    def forward(self, batch):
+        # Apply two different augmentations to the same image
+        y1, y2 = self.transform(batch)
+        # Compute the Barlow Twins loss
+        loss = self.barlow_twins(y1, y2)
+        return loss
 
     def training_step(self, batch, batch_idx):
+        # Increment the step counter
+        self.step += 1
+        # Initialize the optimizer
+        param_weights = []
+        param_biases = []
+        for param in self.barlow_twins.parameters():
+            if param.ndim == 1:
+                param_biases.append(param)
+            else:
+                param_weights.append(param)
+        parameters = [{"params": param_weights}, {"params": param_biases}]
+        opt = LARS(
+            parameters,
+            lr=0,
+            weight_decay=self.weight_decay,
+            weight_decay_filter=True,
+            lars_adaptation_filter=True,
+        )
+        # Adjust the learning rate
+        adjust_learning_rate(self.args, opt, self.loader_length, self.step)
+        # Zero the gradient before loss computation
+        opt.zero_grad()
+        # Calculate the loss
+        loss = self._step(batch)
+        # Manual backward pass and optimizer step
+        self.manual_backward(loss)
+        opt.step()
+
+        self.log("train_loss", loss, on_epoch=True)
         if batch_idx % self.gc_freq == 0:
             gc.collect()
-        _, _, loss = self._step(batch)
-        self.log("train_loss", loss, on_step=True, on_epoch=True)
+
+        if loss < self.best_train_loss:
+            self.best_train_loss = loss
+            self.barlow_twins.save_model(
+                path=self.CHECKPOINT_PATH + "/best_checkpoint_train.ckpt"
+            )
+
+        self.barlow_twins.save_model(
+            path=self.CHECKPOINT_PATH + "/last_checkpoint.ckpt"
+        )
+
         return loss
 
-    def validation_step(self, val_batch, batch_idx):
+    def validation_step(self, batch, batch_idx):
+        loss = self._step(batch)
+        self.log("val_loss", loss)
         if batch_idx % self.gc_freq == 0:
             gc.collect()
-        _, _, loss = self._step(val_batch)
-        self.log("val_loss", loss, on_step=True, on_epoch=True)
-        return loss
+
+        if loss < self.best_val_loss:
+            self.best_val_loss = loss
+            self.barlow_twins.save_model(
+                path=self.CHECKPOINT_PATH + "/best_checkpoint_val.ckpt"
+            )
 
     def test_step(self, batch, batch_idx):
-        if batch_idx % self.gc_freq == 0:
-            gc.collect()
-        x_latent, x_reconst, loss = self._step(batch)
+        loss = self._step(batch)
         self.log("test_loss", loss)
-        return x_latent, x_reconst
-
-    def predict_step(self, batch, batch_idx, dataloader_idx=0):
         if batch_idx % self.gc_freq == 0:
             gc.collect()
-        x_latent, x_reconst, loss = self._step(batch)
-        return x_latent, x_reconst[:, self.n_genes : self.n_genes + self.n_proteins]
 
-    def get_latent_embedding(self, batch):
-        x_latent, _, _ = self._step(batch)
-        return x_latent.detach().numpy()
-
-    def loss_fn(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
-        """
-        Compute the cosine similarity loss between x and y.
-        :param x: Input tensor of shape (batch_size, embedding_dim)
-        :param y: Input tensor of shape (batch_size, embedding_dim)
-        :return: Tensor of shape (batch_size,) representing the cosine similarity loss between x and y.
-        """
-        x = F.normalize(x, dim=-1, p=2)
-        y = F.normalize(y, dim=-1, p=2)
-        return 2 - 2 * (x * y).sum(dim=-1)
-
-    def configure_optimizers(self):
-        if self.model == "BT":
-            optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
-
-            warmup_steps = self.train_iters_per_epoch * self.warmup_epochs
-
-            scheduler = {
-                "scheduler": torch.optim.lr_scheduler.LambdaLR(
-                    optimizer,
-                    self._linear_warmup_decay(warmup_steps),
-                ),
-                "interval": "step",
-                "frequency": 1,
-            }
-
-            return [optimizer], [scheduler]
-        else:
-            optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay=self.wd)
-            return optimizer
+    def predict_step(self, batch, batch_idx, dataloader_idx: Optional[int] = None):
+        x_reconst, loss = self(batch)
+        if batch_idx % self.gc_freq == 0:
+            gc.collect()
+        return x_reconst

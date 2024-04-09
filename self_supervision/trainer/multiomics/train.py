@@ -18,10 +18,10 @@ from lightning.pytorch.callbacks import (
 from self_supervision.data.datamodules import MerlinDataModule, MultiomicsDataloader
 from self_supervision.models.lightning_modules.multiomics_autoencoder import (
     MultiomicsAutoencoder,
-    OldMLPAutoEncoder,
+    MLPAutoEncoder,
     FG_BG_MultiomicsAutoencoder,
 )
-from self_supervision.models.lightning_modules.cellnet_autoencoder2 import (
+from self_supervision.models.lightning_modules.multiomics_autoencoder import (
     MLPBarlowTwins,
     MLPBYOL,
 )
@@ -220,7 +220,7 @@ def train(
     print("Initialize the model...")
     if args.mode == "pre_training" and args.masking_strategy == "gene_program":
         if args.mode == "pre_training" and args.masking_strategy == "random":
-            ae_model = OldMLPAutoEncoder(
+            ae_model = MLPAutoEncoder(
                 masking_strategy=args.masking_strategy,
                 dropout=args.dropout,
                 learning_rate=args.learning_rate,

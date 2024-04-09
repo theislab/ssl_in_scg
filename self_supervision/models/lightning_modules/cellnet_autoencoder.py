@@ -105,8 +105,6 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
 
     Args:
         gene_dim (int): Dimension of the gene.
-        train_set_size (int): Size of the training set.
-        val_set_size (int): Size of the validation set.
         batch_size (int): Batch size.
         reconst_loss (str, optional): Reconstruction loss function. Defaults to 'mse'.
         learning_rate (float, optional): Learning rate. Defaults to 0.005.
@@ -124,8 +122,6 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
     def __init__(
         self,
         gene_dim: int,
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
         reconst_loss: str = "mse",
         learning_rate: float = 0.005,
@@ -142,8 +138,6 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
         self.automatic_optimization = automatic_optimization
 
         self.gene_dim = gene_dim
-        self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.gc_freq = gc_frequency
 
@@ -296,8 +290,6 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
         type_dim (int): Dimension of the cell type.
         class_weights (np.ndarray): Array of class weights.
         child_matrix (np.ndarray): Matrix representing the child relationship between cell types.
-        train_set_size (int): Size of the training set.
-        val_set_size (int): Size of the validation set.
         batch_size (int): Batch size.
         hvg (bool): Flag indicating whether to use highly variable genes.
         num_hvgs (int): Number of highly variable genes.
@@ -318,11 +310,9 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
         type_dim: int,
         class_weights: np.ndarray,
         child_matrix: np.ndarray,
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
+        hvg: bool = False,
+        num_hvgs: int = 2000,
         supervised_subset: Optional[int] = None,
         learning_rate: float = 0.005,
         weight_decay: float = 0.1,
@@ -335,8 +325,6 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
 
         self.gene_dim = gene_dim
         self.type_dim = type_dim
-        self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.gc_freq = gc_frequency
         self.num_hvgs = num_hvgs
@@ -586,13 +574,10 @@ class MLPAutoEncoder(BaseAutoEncoder):
         units_encoder: List[int],
         units_decoder: List[int],
         # params from datamodule
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
+        hvg: bool = False,
+        num_hvgs: int = 2000,
         # model specific params
-        pert: bool = False,
         supervised_subset: Optional[int] = None,
         reconstruction_loss: str = "mse",
         learning_rate: float = 0.005,
@@ -607,7 +592,6 @@ class MLPAutoEncoder(BaseAutoEncoder):
         masking_rate: Optional[float] = None,
         masking_strategy: Optional[str] = None,  # 'random', 'gene_program'
         encoded_gene_program: Optional[Dict] = None,
-        vae_type: Optional[str] = None,  # make prettier, this is not necessary here
     ):
         # check input
         assert 0.0 <= dropout <= 1.0
@@ -615,15 +599,11 @@ class MLPAutoEncoder(BaseAutoEncoder):
         if reconstruction_loss in ["continuous_bernoulli", "bce"]:
             assert output_activation == nn.Sigmoid
 
-        self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.supervised_subset = supervised_subset
 
         super(MLPAutoEncoder, self).__init__(
             gene_dim=gene_dim,
-            train_set_size=train_set_size,
-            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -694,22 +674,7 @@ class MLPAutoEncoder(BaseAutoEncoder):
             )
         else:
             self.hvg_indices = None
-        if pert:  # hvg indices for perturbation data, TO DO: make prettier
-            root = os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )
-            )
-            self.hvg_indices = pickle.load(
-                open(
-                    root
-                    + "/self_supervision/data/perturbations/Full_Split_sciplex2020_pert_indices.pickle",
-                    "rb",
-                )
-            )
-        else:
-            self.hvg_indices = None
-
+        
     def _step(self, batch, training=True):
         targets = batch["X"]
         inputs = batch["X"]
@@ -843,7 +808,6 @@ class MLPAutoEncoder(BaseAutoEncoder):
             # Filter the batch based on the mask
             batch = {key: value[mask] for key, value in batch.items()}
         x_reconst, loss = self._step(batch)
-        # to do add hvg here!
         if self.hvg_indices is not None:
             batch["X"] = batch["X"][:, self.hvg_indices]
         self.log_dict(
@@ -930,8 +894,6 @@ class MLPNegBin(BaseAutoEncoder):
         gene_dim (int): Dimensionality of the gene input.
         units_encoder (List[int]): List of integers specifying the number of hidden units in each encoder layer.
         units_decoder (List[int]): List of integers specifying the number of hidden units in each decoder layer.
-        train_set_size (int): Size of the training set.
-        val_set_size (int): Size of the validation set.
         batch_size (int): Batch size.
         hvg (bool): Flag indicating whether to use highly variable genes (HVGs) for training.
         num_hvgs (int): Number of highly variable genes to use.
@@ -946,7 +908,6 @@ class MLPNegBin(BaseAutoEncoder):
         masking_rate (Optional[float]): Rate of masking for input data. Default is None.
         masking_strategy (Optional[str]): Masking strategy for input data. Default is None.
         encoded_gene_program (Optional[Dict]): Encoded gene program. Default is None.
-        vae_type (str): Type of VAE. Default is None.
 
     Raises:
         NotImplementedError: If masking is not implemented for MLPNegBin.
@@ -966,11 +927,9 @@ class MLPNegBin(BaseAutoEncoder):
         gene_dim: int,
         units_encoder: List[int],
         units_decoder: List[int],
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
+        hvg: bool = False,
+        num_hvgs: int = 2000,
         supervised_subset: Optional[int] = None,
         gene_likelihood: str = "nb",  # 'zinb', 'nb', 'poisson'
         learning_rate: float = 0.005,
@@ -984,13 +943,9 @@ class MLPNegBin(BaseAutoEncoder):
         masking_rate: Optional[float] = None,
         masking_strategy: Optional[str] = None,  # 'random', 'gene_program'
         encoded_gene_program: Optional[Dict] = None,
-        vae_type: str = None,  # make prettier, this is not necessary here
-        pert: bool = False,  # make prettier, this is not necessary here
     ):
         super(MLPNegBin, self).__init__(
             gene_dim=gene_dim,
-            train_set_size=train_set_size,
-            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -1517,308 +1472,6 @@ class MLPNegBin(BaseAutoEncoder):
         return metrics
 
 
-class VAENegBin(MLPNegBin):
-    """
-    Variational Autoencoder (VAE) class for the Negative Binomial (NegBin) distribution.
-
-    # tbd
-    """
-
-    def __init__(
-        self,
-        gene_dim: int,
-        units_encoder: List[int],
-        units_decoder: List[int],
-        train_set_size: int,
-        val_set_size: int,
-        batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
-        supervised_subset: Optional[int] = None,
-        gene_likelihood: str = "nb",  # 'zinb', 'nb', 'poisson'
-        learning_rate: float = 0.005,
-        weight_decay: float = 0.1,
-        dropout: float = 0.1,
-        optimizer: Callable[..., torch.optim.Optimizer] = torch.optim.AdamW,
-        lr_scheduler: Callable = None,
-        lr_scheduler_kwargs: Dict = None,
-        activation: Callable[[], torch.nn.Module] = nn.SELU,
-        masking_rate: Optional[float] = None,
-        masking_strategy: Optional[str] = None,
-        encoded_gene_program: Optional[Dict] = None,
-        vae_type: str = None,  # make prettier, this is not necessary here
-    ):
-        super(VAENegBin, self).__init__(
-            gene_dim=gene_dim,
-            units_encoder=units_encoder,
-            units_decoder=units_decoder,
-            train_set_size=train_set_size,
-            val_set_size=val_set_size,
-            batch_size=batch_size,
-            hvg=hvg,
-            num_hvgs=num_hvgs,
-            supervised_subset=supervised_subset,
-            gene_likelihood=gene_likelihood,
-            learning_rate=learning_rate,
-            weight_decay=weight_decay,
-            dropout=dropout,
-            optimizer=optimizer,
-            lr_scheduler=lr_scheduler,
-            lr_scheduler_kwargs=lr_scheduler_kwargs,
-            activation=activation,
-            masking_rate=masking_rate,
-            masking_strategy=masking_strategy,
-            encoded_gene_program=encoded_gene_program,
-            vae_type=vae_type,
-        )
-
-        self.latent_dim = self.encoder[-1].out_features
-
-        # Modify decoder to take latent_dim as input
-        self.decoder[0].in_channels = self.latent_dim
-
-        # Modify encoder to output both mean and log_var
-        self.encoder_mu = nn.Linear(
-            self.encoder[-1].out_features, self.encoder[-1].out_features
-        )
-        self.encoder_log_var = nn.Linear(
-            self.encoder[-1].out_features, self.encoder[-1].out_features
-        )
-
-    def reparameterize(self, mu, log_var):
-        """
-        Reparameterization trick to sample from N(mu, std) from N(0,1).
-
-        Args:
-            mu (torch.Tensor): Mean of the distribution.
-            log_var (torch.Tensor): Log variance of the distribution.
-
-        Returns:
-            torch.Tensor: Sampled latent variable.
-
-        """
-        std = torch.exp(0.5 * log_var)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-
-    def forward(self, x_in):
-        """
-        Forward pass of the MLPNegBin model.
-
-        Args:
-            x_in (torch.Tensor): Input tensor.
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]: Tuple containing the latent representation, mean, and inverse dispersion.
-        """
-        # Encoder
-        x_latent = self.encoder(x_in)
-
-        # Latent space
-        mu = self.encoder_mu(x_latent)
-        log_var = self.encoder_log_var(x_latent)
-
-        # Reparameterization trick
-        z = self.reparameterize(mu, log_var)
-
-        # Decoder
-        output = self.decoder(z)
-
-        if self.gene_likelihood in ["nb", "zinb"]:
-            theta = self.px_r.exp()
-
-        # Extract parameters for gene expression likelihood distribution
-        if self.gene_likelihood == "zinb":
-            mu = output[:, : self.gene_dim]
-            pi = output[:, 2 * self.gene_dim :]
-            return x_latent, mu, theta, pi
-        elif self.gene_likelihood == "nb":
-            mu = output[:, : self.gene_dim]
-            return x_latent, mu, theta
-        elif self.gene_likelihood == "poisson":
-            mu = output
-            return x_latent, mu
-
-
-class VAE(MLPAutoEncoder):
-    """
-    Variational Autoencoder (VAE) class.
-
-    Args:
-        units_encoder (List[int]): List of integers specifying the number of units in each encoder layer.
-        vae_type (str, optional): Type of VAE. Choose between 'simple_vae' and 'scvi_vae'. Defaults to 'simple_vae'.
-        **kwargs: Additional keyword arguments to be passed to the parent class.
-
-    Attributes:
-        vae_type (str): Type of VAE.
-        latent_dim (int): Dimensionality of the latent space.
-        encoder_mu (nn.Linear): Linear layer to compute the mean of the latent space.
-        encoder_log_var (nn.Linear): Linear layer to compute the log variance of the latent space.
-        encoder_pi (nn.Linear): Linear layer for scVI-style VAE to compute the pi parameter.
-        encoder_theta (nn.Linear): Linear layer for scVI-style VAE to compute the theta parameter.
-
-    Methods:
-        reparameterize(mu, log_var): Reparameterization trick to sample from N(mu, std) from N(0,1).
-        zinb_loss(y_true, y_pred, pi, theta): Zero-inflated negative binomial loss.
-        invert_sf_log1p_norm(x_norm): Invert the log1p and scaling factor normalization.
-        forward(x_in): Forward pass of the VAE.
-        _step(batch, training=True): Perform a single step of the VAE training.
-
-    """
-
-    def __init__(
-        self,
-        units_encoder: List[int],
-        vae_type: str = "simple_vae",  # Choose between 'simple_vae' and 'scvi_vae'
-        **kwargs,
-    ):
-        super(VAE, self).__init__(units_encoder=units_encoder, **kwargs)
-
-        self.vae_type = vae_type
-        self.latent_dim = self.encoder[-1].out_features
-        self.decoder[0].in_channels = self.latent_dim
-
-        # Modify encoder to output both mean and log_var
-        self.encoder_mu = nn.Linear(self.encoder[-1].out_features, self.latent_dim)
-        self.encoder_log_var = nn.Linear(self.encoder[-1].out_features, self.latent_dim)
-
-        # For scVI-style VAE
-        if self.vae_type == "scvi_vae":
-            self.encoder_pi = nn.Linear(
-                self.latent_dim, self.encoder[0].in_features
-            )  # from 64 to 2000
-            self.encoder_theta = nn.Linear(
-                self.latent_dim, self.encoder[0].in_features
-            )  # from 64 to 2000
-
-        # Modify decoder to take latent_dim as input
-        self.decoder[0].in_channels = self.latent_dim
-
-    def reparameterize(self, mu, log_var):
-        """
-        Reparameterization trick to sample from N(mu, std) from N(0,1).
-
-        Args:
-            mu (torch.Tensor): Mean of the distribution.
-            log_var (torch.Tensor): Log variance of the distribution.
-
-        Returns:
-            torch.Tensor: Sampled latent variable.
-
-        """
-        std = torch.exp(0.5 * log_var)
-        eps = torch.randn_like(std)
-        return mu + eps * std
-
-    def zinb_loss(self, y_true, y_pred, pi, theta):
-        """
-        Zero-inflated negative binomial loss.
-
-        Args:
-            y_true (torch.Tensor): True values.
-            y_pred (torch.Tensor): Predicted values.
-            pi (torch.Tensor): Pi parameter.
-            theta (torch.Tensor): Theta parameter.
-
-        Returns:
-            torch.Tensor: Loss value.
-
-        """
-        nb_term = (
-            torch.lgamma(theta + y_true)
-            - torch.lgamma(y_true + 1)
-            - torch.lgamma(theta)
-        )
-        nb_term += theta * (torch.log(theta) - torch.log(theta + y_pred)) + y_true * (
-            torch.log(y_pred) - torch.log(theta + y_pred)
-        )
-        zero_term = torch.log(
-            pi + (1 - pi) * torch.pow(theta / (theta + y_pred), theta)
-        )
-        return -torch.sum(zero_term + torch.logaddexp(torch.log(1 - pi), nb_term))
-
-    def invert_sf_log1p_norm(self, x_norm):
-        """
-        Invert the log1p and scaling factor normalization.
-
-        Args:
-            x_norm (torch.Tensor): Normalized input.
-
-        Returns:
-            torch.Tensor: Inverted and scaled input.
-
-        """
-        x_exp = torch.expm1(x_norm)  # inverse of log1p
-        scaling_factor = 10000.0 / torch.sum(x_exp, axis=1, keepdim=True)
-        x_raw = x_exp / scaling_factor
-        return x_raw
-
-    def forward(self, x_in):
-        """
-        Forward pass of the VAE.
-
-        Args:
-            x_in (torch.Tensor): Input tensor.
-
-        Returns:
-            tuple: Tuple containing the latent variable, reconstructed input, mean, log variance, pi, and theta.
-
-        """
-        x_encoded = self.encoder(x_in)
-
-        mu = self.encoder_mu(x_encoded)
-        log_var = self.encoder_log_var(x_encoded)
-
-        z = self.reparameterize(mu, log_var)
-
-        if self.vae_type == "scvi_vae":
-            pi = self.encoder_pi(x_encoded)
-            theta = self.encoder_theta(x_encoded)
-        else:
-            pi, theta = None, None
-
-        x_reconst = self.decoder(z)
-
-        if self.vae_type == "scvi_vae":
-            x_reconst_inverted = self.invert_sf_log1p_norm(x_reconst)
-        else:
-            x_reconst_inverted = x_reconst
-
-        return z, x_reconst_inverted, mu, log_var, pi, theta
-
-    def _step(self, batch, training=True):
-        """
-        Perform a single step of the VAE training.
-
-        Args:
-            batch (dict): Dictionary containing the input batch.
-            training (bool, optional): Whether the model is in training mode. Defaults to True.
-
-        Returns:
-            tuple: Tuple containing the reconstructed input and the loss value.
-
-        """
-        if self.hvg_indices is not None:
-            x_in = batch["X"][:, self.hvg_indices]
-        else:
-            x_in = batch["X"]
-        z, x_reconst_inverted, mu, log_var, pi, theta = self.forward(x_in)
-        targets = x_in
-
-        if self.vae_type == "simple_vae":
-            reconst_loss = self._calc_reconstruction_loss(x_reconst_inverted, targets)
-        else:  # scvi_vae
-            reconst_loss = self.zinb_loss(targets, x_reconst_inverted, pi, theta)
-
-        kl_divergence = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp())
-
-        self.log("kl_divergence", kl_divergence, on_epoch=True)
-
-        loss = reconst_loss + kl_divergence
-
-        return x_reconst_inverted, loss
-
-
 class MLPClassifier(BaseClassifier):
     """
     Multi-Layer Perceptron (MLP) classifier for cell type classification.
@@ -1829,8 +1482,6 @@ class MLPClassifier(BaseClassifier):
         class_weights (np.ndarray): Array of class weights for loss calculation.
         child_matrix (np.ndarray): Matrix representing the hierarchical relationship between cell types.
         units (List[int]): List of hidden unit sizes for the MLP.
-        train_set_size (int): Size of the training set.
-        val_set_size (int): Size of the validation set.
         batch_size (int): Batch size for training and inference.
         hvg (bool): Flag indicating whether to use highly variable genes.
         num_hvgs (int): Number of highly variable genes to use.
@@ -1850,11 +1501,9 @@ class MLPClassifier(BaseClassifier):
         class_weights: np.ndarray,
         child_matrix: np.ndarray,
         units: List[int],
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
+        hvg: bool = False,
+        num_hvgs: int = 2000,
         supervised_subset: Optional[int] = None,
         dropout: float = 0.0,
         learning_rate: float = 0.005,
@@ -1868,8 +1517,6 @@ class MLPClassifier(BaseClassifier):
             type_dim=type_dim,
             class_weights=class_weights,
             child_matrix=child_matrix,
-            train_set_size=train_set_size,
-            val_set_size=val_set_size,
             batch_size=batch_size,
             hvg=hvg,
             num_hvgs=num_hvgs,
@@ -1993,279 +1640,6 @@ class MLPClassifier(BaseClassifier):
         return self.forward_embedding(x)
 
 
-class PertClassifier(pl.LightningModule):
-    classifier: Callable  # Classifier module
-
-    def __init__(
-        self,
-        gene_dim: int,
-        type_dim: int,
-        units: List[int],
-        dropout: float = 0.0,
-        learning_rate: float = 0.005,
-        weight_decay: float = 0.1,
-        optimizer: Callable[..., torch.optim.Optimizer] = torch.optim.AdamW,
-        lr_scheduler: Callable = None,
-        lr_scheduler_kwargs: Dict = None,
-        gc_frequency: int = 1,
-    ):
-        super(PertClassifier, self).__init__()
-
-        self.classifier = MLP(
-            in_channels=gene_dim,
-            hidden_channels=units + [type_dim],
-            dropout=dropout,
-            inplace=False,
-        )
-
-        self.gc_freq = gc_frequency
-        self.learning_rate = learning_rate
-        self.weight_decay = weight_decay
-        self.optim = optimizer
-        self.lr_scheduler = lr_scheduler
-        self.lr_scheduler_kwargs = lr_scheduler_kwargs
-
-        metrics = MetricCollection(
-            {
-                "f1_micro": MulticlassF1Score(num_classes=type_dim, average="micro"),
-                "f1_macro": MulticlassF1Score(num_classes=type_dim, average="macro"),
-            }
-        )
-        self.train_metrics = metrics.clone(prefix="train_")
-        self.val_metrics = metrics.clone(prefix="val_")
-        self.test_metrics = metrics.clone(prefix="test_")
-
-    def _step(self, batch, training=True):
-        """
-        Perform a forward pass and calculate the loss for a batch.
-
-        Args:
-            batch (dict): Dictionary containing the input data batch.
-            training (bool, optional): Flag indicating whether the model is in training mode. Defaults to True.
-
-        Returns:
-            torch.Tensor: Corrected predictions for the batch.
-            torch.Tensor: Loss value for the batch.
-        """
-        logits = self(batch["X"])
-        with torch.no_grad():
-            preds = torch.argmax(logits, dim=1)
-        if training:
-            loss = F.cross_entropy(logits, batch["perturbations"])
-        else:
-            loss = F.cross_entropy(logits, batch["perturbations"])
-
-        return preds, loss
-
-    def on_after_batch_transfer(self, batch, dataloader_idx):
-        """
-        Callback function to be executed after a batch is transferred to the device.
-
-        Args:
-            batch (dict): Dictionary containing the input data batch.
-            dataloader_idx (int): Index of the dataloader.
-        Returns:
-            dict: Dictionary containing the input data batch.
-        """
-        with torch.no_grad():
-            batch["perturbations"] = torch.squeeze(batch["perturbations"])
-        return batch
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass of the MLPClassifier.
-
-        Args:
-            x (torch.Tensor): Input tensor.
-
-        Returns:
-            torch.Tensor: Output tensor.
-        """
-        if isinstance(x, tuple):
-            x = x[0]
-        if isinstance(x, dict):
-            x = x["X"]
-        return self.classifier(x)
-
-    def training_step(self, batch, batch_idx):
-        """
-        Training step.
-
-        Args:
-            batch (dict): Dictionary containing the input data batch.
-            batch_idx (int): Index of the current batch.
-
-        Returns:
-            torch.Tensor: Loss value.
-        """
-        preds, loss = self._step(batch)
-        self.log("train_loss", loss, on_epoch=True, on_step=True)
-        f1_macro = self.train_metrics["f1_macro"](preds, batch["perturbations"])
-        f1_micro = self.train_metrics["f1_micro"](preds, batch["perturbations"])
-        self.log("train_f1_macro_step", f1_macro)
-        self.log("train_f1_micro_step", f1_micro)
-        if batch_idx % self.gc_freq == 0:
-            gc.collect()
-        return loss
-
-    def validation_step(self, batch, batch_idx):
-        """
-        Validation step.
-
-        Args:
-            batch (dict): Dictionary containing the input data batch.
-            batch_idx (int): Index of the current batch.
-        """
-        preds, loss = self._step(batch, training=False)
-        self.log("val_loss", loss)
-        f1_macro = self.val_metrics["f1_macro"](preds, batch["perturbations"])
-        f1_micro = self.val_metrics["f1_micro"](preds, batch["perturbations"])
-        self.log("val_f1_macro_step", f1_macro)
-        self.log("val_f1_micro_step", f1_micro)
-        if batch_idx % self.gc_freq == 0:
-            gc.collect()
-
-    def test_step(self, batch, batch_idx):
-        """
-        Test step.
-
-        Args:
-            batch (dict): Dictionary containing the input data batch.
-            batch_idx (int): Index of the current batch.
-        """
-        preds, loss = self._step(batch, training=False)
-        self.log("test_loss", loss)
-        f1_macro = self.test_metrics["f1_macro"](preds, batch["perturbations"])
-        f1_micro = self.test_metrics["f1_micro"](preds, batch["perturbations"])
-        self.log("test_f1_macro_step", f1_macro)
-        self.log("test_f1_micro_step", f1_micro)
-        if batch_idx % self.gc_freq == 0:
-            gc.collect()
-
-    def on_train_epoch_end(self):
-        """
-        Callback function to be executed after each training epoch.
-        """
-        self.log("train_f1_macro_epoch", self.train_metrics["f1_macro"].compute())
-        self.train_metrics["f1_macro"].reset()
-        self.log("train_f1_micro_epoch", self.train_metrics["f1_micro"].compute())
-        self.train_metrics["f1_micro"].reset()
-        gc.collect()
-
-    def on_validation_epoch_end(self):
-        """
-        Callback function to be executed after each validation epoch.
-        """
-        f1_macro = self.val_metrics["f1_macro"].compute()
-        self.log("val_f1_macro", f1_macro)
-        self.log("hp_metric", f1_macro)
-        self.val_metrics["f1_macro"].reset()
-        self.log("val_f1_micro", self.val_metrics["f1_micro"].compute())
-        self.val_metrics["f1_micro"].reset()
-        gc.collect()
-
-    def on_test_epoch_end(self):
-        """
-        Callback function to be executed after each test epoch.
-        """
-        self.log("test_f1_macro", self.test_metrics["f1_macro"].compute())
-        self.test_metrics["f1_macro"].reset()
-        self.log("test_f1_micro", self.test_metrics["f1_micro"].compute())
-        self.test_metrics["f1_micro"].reset()
-        gc.collect()
-
-    def configure_optimizers(self):
-        """
-        Configure the optimizer and learning rate scheduler.
-
-        Returns:
-            Tuple[List[torch.optim.Optimizer], List[torch.optim.lr_scheduler._LRScheduler]]: Tuple containing the optimizer and the learning rate scheduler.
-        """
-        optimizer_config = {
-            "optimizer": self.optim(
-                self.parameters(), lr=self.learning_rate, weight_decay=self.weight_decay
-            )
-        }
-        if self.lr_scheduler is not None:
-            lr_scheduler_kwargs = (
-                {} if self.lr_scheduler_kwargs is None else self.lr_scheduler_kwargs
-            )
-            interval = lr_scheduler_kwargs.pop("interval", "epoch")
-            monitor = lr_scheduler_kwargs.pop("monitor", "val_loss_epoch")
-            frequency = lr_scheduler_kwargs.pop("frequency", 1)
-            scheduler = self.lr_scheduler(
-                optimizer_config["optimizer"], **lr_scheduler_kwargs
-            )
-            optimizer_config["lr_scheduler"] = {
-                "scheduler": scheduler,
-                "interval": interval,
-                "monitor": monitor,
-                "frequency": frequency,
-            }
-
-        return optimizer_config
-
-    def predict_step(
-        self, batch, batch_idx, dataloader_idx=None, predict_embedding=False
-    ):
-        """
-        Perform a prediction step for a batch.
-
-        Args:
-            batch (tuple or dict): Input data batch.
-            batch_idx (int): Index of the batch.
-            dataloader_idx (int, optional): Index of the dataloader. Defaults to None.
-            predict_embedding (bool, optional): Flag indicating whether to predict the embedding. Defaults to False.
-
-        Returns:
-            torch.Tensor or None: Predicted values for the batch.
-            torch.Tensor or None: Target values for the batch.
-        """
-        if isinstance(batch, tuple):
-            batch = batch[0]
-
-        if batch_idx % self.gc_freq == 0:
-            gc.collect()
-
-        if predict_embedding:
-            return self.encoder(batch["X"]).detach(), batch["perturbations"]
-        else:
-            preds_corrected, loss = self._step(batch, training=False)
-            return preds_corrected, batch["perturbations"]
-
-    def forward_embedding(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass to compute the embedding from the MLP.
-        The computed embedding is the output before the last Linear layer of the MLP.
-
-        Args:
-            x (torch.Tensor): Input tensor.
-
-        Returns:
-            torch.Tensor: Computed embedding tensor.
-        """
-        for i, layer in enumerate(self.classifier):
-            x = layer(x)
-            if i == len(self.classifier) - 2:
-                break
-        return x
-
-    def predict_embedding(self, batch, batch_idx, dataloader_idx=None) -> torch.Tensor:
-        """
-        Function to predict the embedding from the given batch.
-
-        Args:
-            batch (dict): Input data batch.
-            batch_idx (int): Index of the batch.
-            dataloader_idx (int, optional): Index of the dataloader. Defaults to None.
-
-        Returns:
-            torch.Tensor: Predicted embedding tensor.
-        """
-        x = batch["X"]
-        return self.forward_embedding(x)
-
-
 class MLPBYOL(BaseAutoEncoder):
     def __init__(
         self,
@@ -2273,17 +1647,15 @@ class MLPBYOL(BaseAutoEncoder):
         gene_dim: int,
         units_encoder: List[int],
         # params from datamodule
-        train_set_size: int,
-        val_set_size: int,
         batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
         # contrastive learning params
         backbone: str,  # MLP, TabNet
         augment_type: str,  # Gaussian, Uniform
         augment_intensity: float,
         use_momentum: bool,
         # model specific params
+        hvg: bool = False,
+        num_hvgs: int = 2000,
         lr: float = 0.005,
         weight_decay: float = 0.1,
         dropout: float = 0.1,
@@ -2295,14 +1667,10 @@ class MLPBYOL(BaseAutoEncoder):
         # check input
         assert 0.0 <= dropout <= 1.0
 
-        self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
 
         super(MLPBYOL, self).__init__(
             gene_dim=gene_dim,
-            train_set_size=train_set_size,
-            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=lr,
             weight_decay=weight_decay,
@@ -2401,12 +1769,10 @@ class MLPBYOL(BaseAutoEncoder):
             gc.collect()
         return x_reconst, batch
 
-
 # helper
 class DictAsAttributes:
     def __init__(self, dictionary):
         self.__dict__.update(dictionary)
-
 
 class MLPBarlowTwins(BaseAutoEncoder):
     def __init__(
@@ -2415,15 +1781,14 @@ class MLPBarlowTwins(BaseAutoEncoder):
         gene_dim: int,
         units_encoder: List[int],
         # params from datamodule
-        train_set_size: int,
-        val_set_size: int,
-        batch_size: int,
-        hvg: bool,
-        num_hvgs: int,
-        # contrastive learning params
         CHECKPOINT_PATH: str,
-        backbone: str,  # MLP, TabNet
         augment_intensity: float,
+        train_set_size: int,
+        batch_size: int,
+        hvg: bool = False,
+        num_hvgs: int = 2000,
+        # contrastive learning params
+        backbone: str = 'MLP',  # MLP, TabNet
         learning_rate_weights: float = 0.2,
         learning_rate_biases: float = 0.0048,
         lambd: float = 0.0051,
@@ -2440,8 +1805,6 @@ class MLPBarlowTwins(BaseAutoEncoder):
 
         super(MLPBarlowTwins, self).__init__(
             gene_dim=gene_dim,
-            train_set_size=train_set_size,
-            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=lr,
             weight_decay=weight_decay,
@@ -2456,14 +1819,13 @@ class MLPBarlowTwins(BaseAutoEncoder):
         self.best_val_loss = np.inf
         self.best_train_loss = np.inf
         self.num_hvgs = num_hvgs
-
         self.train_set_size = train_set_size
-        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.weight_decay = weight_decay
         self.learning_rate_weights = learning_rate_weights
         self.learning_rate_biases = learning_rate_biases
         self.lambd = lambd
+
 
         self.loader_length = self.train_set_size // self.batch_size
 

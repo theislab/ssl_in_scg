@@ -45,24 +45,25 @@ adata = sc.read_h5ad(
     f"/lustre/groups/ml01/workspace/mojtaba.bahrami/cellxgene/cellxgene_{split}_adata.h5ad"
 )
 
+base_dir = '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/'
 model_dirs = {
-    ('reconstruction', 'Supervised-0'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_No_SSL_CN_integration_run0MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'Supervised-1'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_No_SSL_CN_integration_run1MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'Supervised-2'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_No_SSL_CN_integration_run2MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'Supervised-3'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_No_SSL_CN_integration_run3MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'Supervised-4'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_No_SSL_CN_integration_run4MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
+    ('reconstruction', 'Supervised-0'): os.path.join(base_dir, 'CN_No_SSL_CN_integration_run0MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'Supervised-1'): os.path.join(base_dir, 'reconstruction/CN_No_SSL_CN_integration_run1MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'Supervised-2'): os.path.join(base_dir, 'reconstruction/CN_No_SSL_CN_integration_run2MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'Supervised-3'): os.path.join(base_dir, 'reconstruction/CN_No_SSL_CN_integration_run3MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'Supervised-4'): os.path.join(base_dir, 'reconstruction/CN_No_SSL_CN_integration_run4MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
 
-    ('reconstruction', 'SSL-0'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run0MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'SSL-1'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run1MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'SSL-2'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run2MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'SSL-3'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run3MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'SSL-4'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run4MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
+    ('reconstruction', 'SSL-0'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run0MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'SSL-1'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run1MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'SSL-2'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run2MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'SSL-3'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run3MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'SSL-4'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_run4MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
 
-    ('reconstruction', 'SSL-Shallow-0'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run0MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'SSL-Shallow-1'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run1MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'SSL-Shallow-2'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run2MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'SSL-Shallow-3'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run3MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
-    ('reconstruction', 'SSL-Shallow-4'): '/lustre/groups/ml01/workspace/mojtaba.bahrami/trained_models/final_models/reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run4MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt',
+    ('reconstruction', 'SSL-Shallow-0'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run0MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'SSL-Shallow-1'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run1MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'SSL-Shallow-2'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run2MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'SSL-Shallow-3'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run3MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
+    ('reconstruction', 'SSL-Shallow-4'): os.path.join(base_dir, 'reconstruction/CN_SSL_CN_CN_MLP_50pintegration_shallow_earlystopping_run4MLP__Lung_Integration/default/version_0/checkpoints/best_checkpoint_val.ckpt'),
     
     }
 
