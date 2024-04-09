@@ -7,7 +7,6 @@ System Requirements
 -------------------
 - Python 3.10
 - Dependencies listed in `requirements.txt`
-- Tested on Python 3.10
 
 Installation Guide
 -------------------
@@ -34,11 +33,11 @@ Demo
 
 **Large Dataset:**
 
-If you're working with a large dataset, it's essential to set up an efficient data-loading pipeline to ensure smooth training. We recommend reviewing the store-creation notebooks available in the `scTab repository <https://github.com/theislab/scTab/tree/main/notebooks/store_creation>`_. By following these notebooks, you can create a Merlin datamodule, which the framework can seamlessly read.
+If you're working with a large dataset, it's essential to set up an efficient data-loading pipeline to ensure smooth training. We recommend the store-creation notebooks in the `scTab repository <https://github.com/theislab/scTab/tree/main/notebooks/store_creation>`_. By following these notebooks, you can create a Merlin datamodule, which the framework can seamlessly read.
 
 **Small Dataset or Single Adata Object:**
 
-For small datasets or a single Adata object, a simple PyTorch dataloader is sufficient (like done in our `multiomics application <https://github.com/theislab/ssl_in_scg/blob/master/self_supervision/data/datamodules.py#L173>`_). However, please note that this approach is not implemented for pretraining, as meaningful pretraining requires larger datasets.
+For small datasets or a single Adata object, a simple PyTorch dataloader is sufficient (like done in our `multiomics application <https://github.com/theislab/ssl_in_scg/blob/master/self_supervision/data/datamodules.py#L173>`_). A simplified demo for masked pre-training of a smaller (i.e., fitting into memory) adata object is in `sc_mae <github.com/theislab/sc_mae>`_.
 
 **Adapting Data Path and Running Models:**
 
@@ -55,8 +54,23 @@ Our experiments were performed on GPUs, and thus, our models have not been teste
 Instructions for Use
 --------------------
 
-Obtain the dataset from the scTab repository: [Insert link to scTab repository here]
+Obtain the dataset from the `scTab repository <github.com/theislab/scTab>`_
 Follow the instructions provided in the README of this repository to run the models on your data.
+
+Citation
+--------
+
+If you find our work useful, please cite the following paper:
+
+**Delineating the Effective Use of Self-Supervised Learning in Single-Cell Genomics**
+
+`Link to the paper <https://doi.org/10.1101/2024.02.16.580624>`_
+
+If you use the scTab data in your research, please cite the following paper:
+
+**Scaling cross-tissue single-cell annotation models**
+
+`Link to the paper <https://www.ncbi.nlm.nih.gov/pmc/articles/PMC10592700/>`_
 
 Licence
 -------
