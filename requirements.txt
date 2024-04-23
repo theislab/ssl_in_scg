@@ -27,3 +27,4 @@ torchvision
 wandb
 plotly
 dask_ml
+scvi-tools
