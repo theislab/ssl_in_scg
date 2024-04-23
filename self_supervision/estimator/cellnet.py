@@ -95,8 +95,6 @@ class EstimatorAutoEncoder:
         if self.hvg:
             return {
                 "gene_dim": self.num_hvgs,
-                "train_set_size": sum(self.datamodule.train_dataset.partition_lens),
-                "val_set_size": sum(self.datamodule.val_dataset.partition_lens),
                 "batch_size": self.datamodule.batch_size,
                 "hvg": self.hvg,
                 "num_hvgs": self.num_hvgs,
@@ -104,8 +102,6 @@ class EstimatorAutoEncoder:
         else:
             return {
                 "gene_dim": len(pd.read_parquet(join(self.data_path, "var.parquet"))),
-                "train_set_size": sum(self.datamodule.train_dataset.partition_lens),
-                "val_set_size": sum(self.datamodule.val_dataset.partition_lens),
                 "batch_size": self.datamodule.batch_size,
                 "hvg": self.hvg,
                 "num_hvgs": self.num_hvgs,
@@ -124,8 +120,6 @@ class EstimatorAutoEncoder:
                 "child_matrix": np.load(
                     join(self.data_path, "cell_type_hierarchy/child_matrix.npy")
                 ),
-                "train_set_size": sum(self.datamodule.train_dataset.partition_lens),
-                "val_set_size": sum(self.datamodule.val_dataset.partition_lens),
                 "batch_size": self.datamodule.batch_size,
                 "hvg": self.hvg,
                 "num_hvgs": self.num_hvgs,
@@ -142,8 +136,6 @@ class EstimatorAutoEncoder:
                 "child_matrix": np.load(
                     join(self.data_path, "cell_type_hierarchy/child_matrix.npy")
                 ),
-                "train_set_size": sum(self.datamodule.train_dataset.partition_lens),
-                "val_set_size": sum(self.datamodule.val_dataset.partition_lens),
                 "batch_size": self.datamodule.batch_size,
                 "hvg": self.hvg,
                 "num_hvgs": self.num_hvgs,

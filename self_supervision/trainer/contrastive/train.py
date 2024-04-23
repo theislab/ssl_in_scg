@@ -142,6 +142,7 @@ if __name__ == "__main__":
                 "dropout": args.dropout,
                 "augment_intensity": args.augment_intensity,
                 "CHECKPOINT_PATH": CHECKPOINT_PATH,
+                "train_set_size": sum(estim.datamodule.train_dataset.partition_lens)
             },
         )
         print("Training Barlow Twins")
