@@ -14,9 +14,7 @@ from self_supervision.models.lightning_modules.cellnet_autoencoder import (
     MLPClassifier,
     MLPBYOL,
     MLPBarlowTwins,
-    VAE,
     MLPNegBin,
-    VAENegBin,
 )
 
 
@@ -55,8 +53,6 @@ class EstimatorAutoEncoder:
             self.model = MLPAutoEncoder(
                 **{**self.get_fixed_autoencoder_params(), **model_kwargs}
             )
-        elif model_type == "mlp_vae":
-            self.model = VAE(**{**self.get_fixed_autoencoder_params(), **model_kwargs})
         elif model_type == "mlp_negbin":
             self.model = MLPNegBin(
                 **{**self.get_fixed_autoencoder_params(), **model_kwargs}
