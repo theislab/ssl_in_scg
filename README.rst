@@ -37,7 +37,7 @@ If you're working with a large dataset, it's essential to set up an efficient da
 
 **Small Dataset or Single Adata Object:**
 
-For small datasets or a single Adata object, a simple PyTorch dataloader is sufficient (like done in our `multiomics application <https://github.com/theislab/ssl_in_scg/blob/master/self_supervision/data/datamodules.py#L173>`_). A simplified demo for masked pre-training of a smaller (i.e., fitting into memory) adata object is in `sc_mae <github.com/theislab/sc_mae>`_.
+For small datasets or a single Adata object, a simple PyTorch dataloader is sufficient (like done in our `multiomics application <https://github.com/theislab/ssl_in_scg/blob/master/self_supervision/data/datamodules.py#L173>`_). A simplified demo for masked pre-training of a smaller (i.e., fitting into memory) adata object is in `sc_mae <https://github.com/theislab/sc_mae>`_.
 
 **Adapting Data Path and Running Models:**
 
