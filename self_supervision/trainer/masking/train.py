@@ -22,6 +22,7 @@ from self_supervision.trainer.masking.mask_utils import (
     read_gmt,
 )
 from self_supervision.estimator.cellnet import EstimatorAutoEncoder
+from self_supervision.paths import DATA_DIR, TRAINING_FOLDER
 
 
 def parse_args():
@@ -31,7 +32,7 @@ def parse_args():
         "--model",
         type=str,
         default="MLP",
-        choices=["MLP", "VAE", "NegBin"],
+        choices=["MLP", "NegBin"],
         help="Model to use",
     )
     parser.add_argument("--mask_rate", type=float, default=None, help="Masking rate")
@@ -46,6 +47,12 @@ def parse_args():
         "gp_to_tf - masking with gene programs to transcription factors",
     )
     parser.add_argument(
+        "--donor_list",
+        type=str,
+        default=None,
+        help="Path to donor list file",
+    )
+    parser.add_argument(
         "--gp_file",
         type=str,
         default="C5",
@@ -57,7 +64,7 @@ def parse_args():
     )
     parser.add_argument("--weight_decay", type=float, default=0.01, help="Weight decay")
     parser.add_argument("--dropout", default=0.1, type=float, help="Dropout rate")
-    parser.add_argument("--batch_size", default=16384, type=int, help="Batch size")
+    parser.add_argument("--batch_size", default=8192, type=int, help="Batch size")
     parser.add_argument("--mask_type", default="sparsemax", type=str, help="Mask type")
     parser.add_argument("--version", type=str, default="", help="Version of the model")
     parser.add_argument("--lr", type=float, default=0.001, help="Learning rate")
@@ -71,43 +78,23 @@ def parse_args():
         "--checkpoint_interval", default=1, type=int, help="Checkpoint interval"
     )
     parser.add_argument(
-        "--hvg", action="store_true", help="Whether to use highly variable genes"
-    )
-    parser.add_argument(
-        "--num_hvgs",
-        default=2000,
-        type=int,
-        help="Number of highly variable genes to use",
-    )
-    parser.add_argument(
         "--missing_tolerance", default=0, type=int, help="Missing tolerance"
     )
     parser.add_argument(
-        "--pert", action="store_true", help="Whether to use a random seed"
-    )
-    parser.add_argument(
-        "--data_path",
-        default="/lustre/groups/ml01/workspace/till.richter/merlin_cxg_2023_05_15_sf-log1p",
-        type=str,
-        help="Path to the data stored as parquet files",
-    )
-    # Old, 10M dataset: '/lustre/scratch/users/till.richter/merlin_cxg_simple_norm_parquet'
-    parser.add_argument(
-        "--model_path",
-        default="/lustre/groups/ml01/workspace/till.richter/",
-        type=str,
-        help="Path where the lightning checkpoints are stored",
+        "--data_perc",
+        default=1e0,
+        type=float,
+        help="Percentage of data to use for training",
     )
     return parser.parse_args()
 
 
 def train():
     args = parse_args()
-    if not args.hvg:
-        args.hvg = False
     print(args)
 
     # FIX SEED FOR REPRODUCIBILITY
+    # seed_everything(90)
     torch.manual_seed(0)
 
     # if args.mask_rate is not None but args.masking_strategy is None, args.masking_strategy is set to 'random'
@@ -119,17 +106,9 @@ def train():
         os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
     print("Root: ", root)
-    if args.hvg is True:
-        use_hvg = "HVG_" + str(args.num_hvgs) + "_"
-        num_hvgs = args.num_hvgs
-    else:
-        use_hvg = ""
-        num_hvgs = None
-
     if args.masking_strategy == "random":
         subfolder = (
-            use_hvg
-            + args.model
+            args.model
             + "_"
             + str(int(100 * args.mask_rate))
             + "p"
@@ -138,8 +117,7 @@ def train():
         )
     elif args.masking_strategy == "gene_program":
         subfolder = (
-            use_hvg
-            + args.model
+            args.model
             + "_"
             + args.masking_strategy
             + "_"
@@ -155,17 +133,16 @@ def train():
         or args.masking_strategy == "single_gene_program"
     ):
         subfolder = (
-            use_hvg + args.model + "_" + args.masking_strategy + args.version + "/"
+            args.model + "_" + args.masking_strategy + args.version + "/"
         )
     elif args.masking_strategy is None:
-        subfolder = use_hvg + args.model + "_" + "no_mask" + args.version + "/"
+        subfolder = args.model + "_" + "no_mask" + args.version + "/"
     else:
         raise ValueError(
             "args.masking_strategy needs to be random, gene_program, or None"
         )
     CHECKPOINT_PATH = os.path.join(
-        args.model_path,
-        "trained_models",
+        TRAINING_FOLDER,
         "pretext_models",
         "masking",
         "CN_" + subfolder,
@@ -173,13 +150,12 @@ def train():
     print("Will save model to " + CHECKPOINT_PATH)
     Path(CHECKPOINT_PATH).mkdir(parents=True, exist_ok=True)
 
-    # get estimator, num_hvgs is ignored if not args.hvg
     estim = EstimatorAutoEncoder(
-        data_path=args.data_path, hvg=args.hvg, num_hvgs=num_hvgs
+        data_path=os.path.join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p"),
     )
 
     # set up datamodule
-    estim.init_datamodule(batch_size=args.batch_size)
+    estim.init_datamodule(batch_size=args.batch_size, sub_sample_frac=args.data_perc)
 
     estim.init_trainer(
         trainer_kwargs={
@@ -190,9 +166,7 @@ def train():
             "accelerator": "gpu",
             "devices": 1,
             "num_sanity_val_steps": 0,
-            "check_val_every_n_epoch": 1,
             "logger": [TensorBoardLogger(CHECKPOINT_PATH, name="default")],
-            "log_every_n_steps": 100,
             "detect_anomaly": False,
             "enable_progress_bar": True,
             "enable_model_summary": False,
@@ -229,22 +203,10 @@ def train():
         or args.masking_strategy == "single_gene_program"
     ):
         var_names = np.array(
-            pd.read_parquet(os.path.join(args.data_path, "var.parquet"))[
+            pd.read_parquet(os.path.join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p", "var.parquet"))[
                 "feature_name"
             ].tolist()
         )
-        if args.hvg is True:
-            # if hvg, subset var_names to only hvg
-            hvg_indices = pickle.load(
-                open(
-                    root
-                    + "/self_supervision/data/hvg_"
-                    + str(args.num_hvgs)
-                    + "_indices.pickle",
-                    "rb",
-                )
-            )
-            var_names = var_names[hvg_indices]
 
         if args.gp_file == "C5":  # C5 collection - ontology gene sets, very general
             gp_file = (
@@ -270,27 +232,14 @@ def train():
                 var_names=var_names,
                 gene_program=gene_program,
                 required_tolerance=args.missing_tolerance,
-                hvg=args.hvg,
             )
     elif args.masking_strategy == "gp_to_tf":
         gp_file = "/self_supervision/data/gene_programs/c3.tft.v2023.1.Hs.symbols.gmt"
         var_names = np.array(
-            pd.read_parquet(os.path.join(args.data_path, "var.parquet"))[
+            pd.read_parquet(os.path.join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p", "var.parquet"))[
                 "feature_name"
             ].tolist()
         )
-        if args.hvg is True:
-            # if hvg, subset var_names to only hvg
-            hvg_indices = pickle.load(
-                open(
-                    root
-                    + "/self_supervision/data/hvg_"
-                    + str(args.num_hvgs)
-                    + "_indices.pickle",
-                    "rb",
-                )
-            )
-            var_names = var_names[hvg_indices]
         gene_program = read_gmt_to_dict(gp_file=root + gp_file)
         with torch.no_grad():
             # caution, encoded_gene_program is a dict of tuples of tensors
@@ -306,17 +255,8 @@ def train():
 
     # init model
     # reproducibility
-    if not args.pert:
-        pert = False
-    else:
-        pert = True
-
-    print("Set pert to ", pert)
-
     if args.model == "MLP":
         model_type = "mlp_ae"
-    elif args.model == "VAE":
-        model_type = "mlp_vae"
     elif args.model == "NegBin":
         model_type = "mlp_negbin"
 
@@ -333,6 +273,7 @@ def train():
             "encoded_gene_program": encoded_gene_program,
             "units_encoder": args.hidden_units,
             "units_decoder": args.hidden_units[::-1][1:] if args.decoder else [],
+            "donor_subset": np.load(args.donor_list) if args.donor_list else None,
         },
     )
 

@@ -19,4 +19,4 @@ fi
 
 cd $SSL_PROJECT_HOME/self_supervision/trainer/classifier
 
-CUBLAS_WORKSPACE_CONFIG=:16:8 python -u cellnet_mlp.py --version="run0" --lr=9e-4 --dropout=0.1 --weight_decay=0.05 --stochastic --supervised_subset="HLCA" --pretrained_dir="/lustre/groups/ml01/workspace/$USER/trained_models/pretext_models/contrastive/MLP_BYOL_Gaussian_0_001/default/version_0/checkpoints/best_checkpoint_val.ckpt"  --model_path=/lustre/groups/ml01/workspace/$USER/
+CUBLAS_WORKSPACE_CONFIG=:16:8 python -u train.py --version="run0" --lr=9e-4 --dropout=0.1 --weight_decay=0.05 --stochastic --supervised_subset="HLCA" --pretrained_dir="/lustre/groups/ml01/workspace/$USER/trained_models/pretext_models/contrastive/MLP_BYOL_Gaussian_0_001/default/version_0/checkpoints/best_checkpoint_val.ckpt"  --model_path=/lustre/groups/ml01/workspace/$USER/

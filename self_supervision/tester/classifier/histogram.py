@@ -9,6 +9,7 @@ import torch
 from self_supervision.models.lightning_modules.cellnet_autoencoder import MLPClassifier
 from self_supervision.estimator.cellnet import EstimatorAutoEncoder
 from self_supervision.tester.classifier.test import correct_labels
+from self_supervision.paths import DATA_DIR, RESULTS_FOLDER, TRAINING_FOLDER
 
 
 def generate_data_for_visualization(
@@ -141,9 +142,6 @@ def get_histogram(
     supervised_subset: int,
     supervised_dir: str,
     ssl_dir: str,
-    DATA_PATH: str = "/lustre/groups/ml01/workspace/till.richter/merlin_cxg_2023_05_15_sf-log1p",
-    MODEL_PATH: str = "/lustre/groups/ml01/workspace/till.richter/trained_models/",
-    RESULT_PATH: str = "/lustre/groups/ml01/workspace/till.richter/ssl_results",
 ):
     """
     Generate a histogram for classification results.
@@ -151,28 +149,26 @@ def get_histogram(
     Args:
         estim (EstimatorAutoEncoder): The estimator object.
         supervised_subset (int, optional): The subset ID for supervised training. Defaults to None.
-        DATA_PATH (str, optional): The path to the data. Defaults to '/lustre/groups/ml01/workspace/till.richter/merlin_cxg_2023_05_15_sf-log1p'.
-        MODEL_PATH (str, optional): The path to the trained models. Defaults to '/lustre/groups/ml01/workspace/till.richter/trained_models/'.
-        RESULT_PATH (str, optional): The path to store the result. Defaults to '/lustre/groups/ml01/workspace/till.richter/ssl_results'.
-
+        ssl_dir (str): The directory of the self-supervised model.
     Returns:
         pd.DataFrame: The generated histogram data.
     """
+    STORE_DIR = os.path.join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p")
     # init estim class
-    estim = EstimatorAutoEncoder(DATA_PATH, hvg=False)
+    estim = EstimatorAutoEncoder(STORE_DIR, hvg=False)
 
     # init datamodule
     estim.init_datamodule(batch_size=8192)
 
-    supervised_dir = MODEL_PATH + supervised_dir
-    ssl_dir = MODEL_PATH + ssl_dir
+    supervised_dir = TRAINING_FOLDER + supervised_dir
+    ssl_dir = TRAINING_FOLDER + ssl_dir
 
     # Load labels
     test_labels_reference = dd.read_parquet(
-        os.path.join(DATA_PATH, "test"), columns=["dataset_id"]
+        os.path.join(STORE_DIR, "test"), columns=["dataset_id"]
     )
     test_labels = dd.read_parquet(
-        os.path.join(DATA_PATH, "test"), columns=["cell_type"]
+        os.path.join(STORE_DIR, "test"), columns=["cell_type"]
     )
     test_labels = (
         test_labels[test_labels_reference["dataset_id"] == supervised_subset]
@@ -184,7 +180,7 @@ def get_histogram(
     f1_scores, cell_counts = generate_data_for_visualization(
         estim=estim,
         model_dirs=[supervised_dir, ssl_dir],
-        DATA_PATH=DATA_PATH,
+        DATA_PATH=STORE_DIR,
         supervised_subset=supervised_subset,
     )
 
@@ -212,7 +208,7 @@ def get_histogram(
 
     # Store dataframe
     file_path = os.path.join(
-        RESULT_PATH, "classification", "histogram_" + str(supervised_subset) + ".csv"
+        RESULTS_FOLDER, "classification", "histogram_" + str(supervised_subset) + ".csv"
     )
     df.to_csv(file_path, index=False)
     print("Saved histogram to " + file_path)

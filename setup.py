@@ -19,7 +19,7 @@ with open('requirements.txt') as f:
 
 setup(
     name="self_supervision",
-    version="0.1.0",
+    version="0.2.0",
     url="https://github.com/theislab/self_supervision",
     license='MIT',
     author="Till Richter",

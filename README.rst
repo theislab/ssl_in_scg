@@ -26,22 +26,26 @@ Installation Guide
 
    .. code-block:: bash
 
+       cd directory_where_you_have_your_git_repos/ssl_in_scg
        pip install -e .
+
+4. Create symlink to the storage folder for experiments:
+
+   .. code-block:: bash
+
+       cd directory_where_you_have_your_git_repos/ssl_in_scg
+       ln -s folder_for_experiment_storage project_folder
 
 Demo
 ----
 
 **Large Dataset:**
 
-If you're working with a large dataset, it's essential to set up an efficient data-loading pipeline to ensure smooth training. We recommend the store-creation notebooks in the `scTab repository <https://github.com/theislab/scTab/tree/main/notebooks/store_creation>`_. By following these notebooks, you can create a Merlin datamodule, which the framework can seamlessly read.
+If you're working with a large dataset, it's essential to set up an efficient data-loading pipeline to ensure smooth training. We recommend the store-creation notebooks in the `scTab repository <https://github.com/theislab/scTab/tree/main/notebooks/store_creation>`_. By following these notebooks, you can create a Merlin datamodule, which the framework can read. Save the resulting store in the `project_folder/scTab` directory.
 
 **Small Dataset or Single Adata Object:**
 
-For small datasets or a single Adata object, a simple PyTorch dataloader is sufficient (like done in our `multiomics application <https://github.com/theislab/ssl_in_scg/blob/master/self_supervision/data/datamodules.py#L173>`_). A simplified demo for masked pre-training of a smaller (i.e., fitting into memory) adata object is in `sc_mae <github.com/theislab/sc_mae>`_.
-
-**Adapting Data Path and Running Models:**
-
-Once you have set up the appropriate data-loading pipeline, you can proceed to adapt the data path in the respective training step and run the models.
+For small datasets or a single Adata object, that fit into memory, a simple PyTorch dataloader is sufficient (like done in our `multiomics application <https://github.com/theislab/ssl_in_scg/blob/master/self_supervision/data/datamodules.py>`_). A simplified demo for masked pre-training of a smaller (i.e., fitting into memory) adata object is in `sc_mae <github.com/theislab/sc_mae>`_.
 
 **Expected output:**
 

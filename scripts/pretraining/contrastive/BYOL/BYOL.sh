@@ -1,14 +1,12 @@
 #!/bin/bash
 
-#SBATCH -J byol_best_setting
+#SBATCH -J BYOL
 #SBATCH -p gpu_p
-#SBATCH --qos gpu_normal
+#SBATCH --qos gpu_long
 #SBATCH --gres=gpu:1
-#SBATCH --ntasks-per-node=6
 #SBATCH -t 2-00:00:00
 #SBATCH --mem=150GB
 #SBATCH --nice=10000
-
 
 if [ -n "$1" ]; then
     source "$1"
@@ -18,4 +16,4 @@ fi
 
 cd $SSL_PROJECT_HOME/self_supervision/trainer/contrastive/
 
-python -u train.py --augment_intensity=0.001 --augment_type='Gaussian' --model='MLP' --lr=0.00005 --contrastive_method='BYOL' --weight_decay=0.0 --dropout=0.0 --batch_size=8192 --model_path=/lustre/groups/ml01/workspace/$USER/
+python -u train.py --p 0.3 --negbin_intensity 0.2 --dropout_intensity 0.1 --lr 0.01 --weight_decay 1e-05 --version 'best'
