@@ -1,0 +1,23 @@
+#!/bin/bash
+
+#SBATCH -J Multi_Finetune_BYOL_20M_run1
+#SBATCH -p gpu_p
+#SBATCH --qos gpu_short
+#SBATCH --gres=gpu:1
+#SBATCH -t 05:00:00
+#SBATCH --mem=80GB
+#SBATCH --cpus-per-task=10
+#SBATCH --nice=10000
+
+if [ -n "$1" ]; then
+    source "$1"
+else
+    source "$HOME/.bashrc"
+fi
+conda activate prak7
+
+
+
+
+cd $SSL_PROJECT_HOME/self_supervision/trainer/multiomics
+python train.py --mode 'fine_tuning' --version 'run6' --dropout 0.15740626023302481 --weight_decay 0.0011635827043670439 --learning_rate 8.156092178310426e-05 --pretrained_dir /lustre/groups/ml01/workspace/till.richter/trained_models/pretext_models/multiomics/multiomics_20M_None_BYOL_bt_pretrain_20m/default/version_2/checkpoints/best_checkpoint_val.ckpt

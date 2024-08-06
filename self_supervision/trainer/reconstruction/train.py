@@ -14,7 +14,7 @@ from self_supervision.data.checkpoint_utils import (
     checkpoint_exists,
 )
 from self_supervision.estimator.cellnet import EstimatorAutoEncoder
-
+from self_supervision.paths import DATA_DIR, TRAINING_FOLDER
 
 def update_weights(pretrained_dir, estim):
     """
@@ -134,32 +134,10 @@ def parse_args():
     parser.add_argument("--version", type=str, default="")
     parser.add_argument("--checkpoint_interval", type=int, default=1)
     parser.add_argument(
-        "--hvg", action="store_true", help="Whether to use highly variable genes"
-    )
-    parser.add_argument(
-        "--num_hvgs",
-        default=2000,
-        type=int,
-        help="Number of highly variable genes to use",
-    )
-    parser.add_argument(
         "--stochastic", action="store_true", help="Whether to use a random seed"
     )
     parser.add_argument(
         "--pert", action="store_true", help="Whether to use a random seed"
-    )
-    parser.add_argument(
-        "--data_path",
-        default="/lustre/groups/ml01/workspace/till.richter/merlin_cxg_2023_05_15_sf-log1p",
-        type=str,
-        help="Path to the data stored as parquet files",
-    )
-    # Old, 10M dataset: '/lustre/scratch/users/till.richter/merlin_cxg_simple_norm_parquet'
-    parser.add_argument(
-        "--model_path",
-        default="/lustre/groups/ml01/workspace/till.richter/",
-        type=str,
-        help="Path where the lightning checkpoints are stored",
     )
     return parser.parse_args()
 
@@ -176,15 +154,6 @@ if __name__ == "__main__":
         torch.manual_seed(0)
 
     # CHECKPOINT HANDLING
-    if args.hvg:
-        use_hvg = "HVG_"
-    elif args.pert:
-        use_hvg = "PERT_"
-        args.hvg = True  # For the Estimator
-        num_hvgs = 1000  # For the Estimator
-    else:
-        use_hvg = ""
-        num_hvgs = None
 
     if args.pretrained_dir:
         if "classification" in args.pretrained_dir:
@@ -222,18 +191,17 @@ if __name__ == "__main__":
         supervised_subset = 41
 
     CHECKPOINT_PATH = os.path.join(
-        args.model_path,
-        "trained_models",
+        TRAINING_FOLDER,
         "final_models",
         "reconstruction",
-        "CN_" + use_hvg + subfolder,
+        "CN_" + subfolder,
     )
     print("Will save model to", CHECKPOINT_PATH)
     Path(CHECKPOINT_PATH).mkdir(parents=True, exist_ok=True)
 
     # get estimator
     estim = EstimatorAutoEncoder(
-        data_path=args.data_path, hvg=args.hvg, num_hvgs=num_hvgs
+        data_path=os.path.join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p")
     )
 
     # set up datamodule

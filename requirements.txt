@@ -19,7 +19,7 @@ leidenalg
 scanpy
 rdkit
 jupyter
-scikit-learn==1.2.1
+scikit-learn
 dgl
 dgllife
 descriptastorus
@@ -27,4 +27,4 @@ torchvision
 wandb
 plotly
 dask_ml
-scvi-tools
+faiss-gpu

@@ -1,9 +1,7 @@
 import abc
 import gc
 from typing import Callable, Dict, List, Optional, Tuple
-import os
 import numpy as np
-import pickle
 import lightning.pytorch as pl
 import torch
 import torch.nn as nn
@@ -24,6 +22,7 @@ from self_supervision.models.contrastive.bt import (
     LARS,
     adjust_learning_rate,
 )
+
 
 
 def _mask_gene_programs_numpy(
@@ -105,6 +104,8 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
 
     Args:
         gene_dim (int): Dimension of the gene.
+        train_set_size (int): Size of the training set.
+        val_set_size (int): Size of the validation set.
         batch_size (int): Batch size.
         reconst_loss (str, optional): Reconstruction loss function. Defaults to 'mse'.
         learning_rate (float, optional): Learning rate. Defaults to 0.005.
@@ -122,6 +123,8 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
     def __init__(
         self,
         gene_dim: int,
+        train_set_size: int,
+        val_set_size: int,
         batch_size: int,
         reconst_loss: str = "mse",
         learning_rate: float = 0.005,
@@ -132,15 +135,17 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
         gc_frequency: int = 1,
         automatic_optimization: bool = True,
         supervised_subset: Optional[int] = None,
+        donor_subset: Optional[List[int]] = None,
     ):
         super(BaseAutoEncoder, self).__init__()
 
         self.automatic_optimization = automatic_optimization
 
         self.gene_dim = gene_dim
+        self.train_set_size = train_set_size
+        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.gc_freq = gc_frequency
-
         self.lr = learning_rate
         self.weight_decay = weight_decay
         self.optim = optimizer
@@ -148,6 +153,7 @@ class BaseAutoEncoder(pl.LightningModule, abc.ABC):
         self.lr_scheduler = lr_scheduler
         self.lr_scheduler_kwargs = lr_scheduler_kwargs
         self.supervised_subset = supervised_subset
+        self.donor_subset = donor_subset
 
         metrics = MetricCollection(
             {
@@ -290,9 +296,9 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
         type_dim (int): Dimension of the cell type.
         class_weights (np.ndarray): Array of class weights.
         child_matrix (np.ndarray): Matrix representing the child relationship between cell types.
+        train_set_size (int): Size of the training set.
+        val_set_size (int): Size of the validation set.
         batch_size (int): Batch size.
-        hvg (bool): Flag indicating whether to use highly variable genes.
-        num_hvgs (int): Number of highly variable genes.
         supervised_subset (Optional[int], optional): Subset of the data to use for supervised training. Defaults to None.
         learning_rate (float, optional): Learning rate. Defaults to 0.005.
         weight_decay (float, optional): Weight decay. Defaults to 0.1.
@@ -310,9 +316,9 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
         type_dim: int,
         class_weights: np.ndarray,
         child_matrix: np.ndarray,
+        train_set_size: int,
+        val_set_size: int,
         batch_size: int,
-        hvg: bool = False,
-        num_hvgs: int = 2000,
         supervised_subset: Optional[int] = None,
         learning_rate: float = 0.005,
         weight_decay: float = 0.1,
@@ -325,9 +331,10 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
 
         self.gene_dim = gene_dim
         self.type_dim = type_dim
+        self.train_set_size = train_set_size
+        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.gc_freq = gc_frequency
-        self.num_hvgs = num_hvgs
         self.supervised_subset = supervised_subset
 
         self.lr = learning_rate
@@ -348,24 +355,6 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
 
         self.register_buffer("class_weights", torch.tensor(class_weights.astype("f4")))
         self.register_buffer("child_lookup", torch.tensor(child_matrix.astype("i8")))
-
-        if hvg:
-            root = os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )
-            )
-            self.hvg_indices = pickle.load(
-                open(
-                    root
-                    + "/self_supervision/data/hvg_"
-                    + str(self.num_hvgs)
-                    + "_indices.pickle",
-                    "rb",
-                )
-            )
-        else:
-            self.hvg_indices = None
 
     @abc.abstractmethod
     def _step(self, batch, training=True) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -439,8 +428,6 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
         if isinstance(x, tuple):
             x = x[0]["X"]
 
-        if self.hvg_indices:
-            x = x[:, self.hvg_indices]
         return self.classifier(x)
 
     def training_step(self, batch, batch_idx):
@@ -455,12 +442,13 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
             loss: Training loss.
         """
         if self.supervised_subset is not None:
-            mask = batch["dataset_id"] == self.supervised_subset
+            # Create a mask vector to filter the batch based on the supervised subset and return none if supervised subset is not in the batch
+            mask = torch.tensor([id in self.supervised_subset for id in batch["dataset_id"]])
             if not any(mask):
-                return None, None
-
+                return None
             # Filter the batch based on the mask
             batch = {key: value[mask] for key, value in batch.items()}
+
         preds, loss = self._step(batch, training=True)
         self.log("train_loss", loss)
         f1_macro = self.train_metrics["f1_macro"](preds, batch["cell_type"])
@@ -482,10 +470,10 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
             batch_idx: Index of the batch.
         """
         if self.supervised_subset is not None:
-            mask = batch["dataset_id"] == self.supervised_subset
+            # Create a mask vector to filter the batch based on the supervised subset and return none if supervised subset is not in the batch
+            mask = torch.tensor([id in self.supervised_subset for id in batch["dataset_id"]])
             if not any(mask):
-                return None, None
-
+                return None
             # Filter the batch based on the mask
             batch = {key: value[mask] for key, value in batch.items()}
         preds, loss = self._step(batch, training=False)
@@ -504,10 +492,10 @@ class BaseClassifier(pl.LightningModule, abc.ABC):
             batch_idx: Index of the batch.
         """
         if self.supervised_subset is not None:
-            mask = batch["dataset_id"] == self.supervised_subset
+            # Create a mask vector to filter the batch based on the supervised subset and return none if supervised subset is not in the batch
+            mask = torch.tensor([id in self.supervised_subset for id in batch["dataset_id"]])
             if not any(mask):
-                return None, None
-
+                return None
             # Filter the batch based on the mask
             batch = {key: value[mask] for key, value in batch.items()}
         preds, loss = self._step(batch, training=False)
@@ -574,11 +562,12 @@ class MLPAutoEncoder(BaseAutoEncoder):
         units_encoder: List[int],
         units_decoder: List[int],
         # params from datamodule
+        train_set_size: int,
+        val_set_size: int,
         batch_size: int,
-        hvg: bool = False,
-        num_hvgs: int = 2000,
         # model specific params
         supervised_subset: Optional[int] = None,
+        donor_subset: Optional[List[int]] = None,
         reconstruction_loss: str = "mse",
         learning_rate: float = 0.005,
         weight_decay: float = 0.1,
@@ -599,11 +588,16 @@ class MLPAutoEncoder(BaseAutoEncoder):
         if reconstruction_loss in ["continuous_bernoulli", "bce"]:
             assert output_activation == nn.Sigmoid
 
+        self.train_set_size = train_set_size
+        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.supervised_subset = supervised_subset
+        self.donor_subset = donor_subset
 
         super(MLPAutoEncoder, self).__init__(
             gene_dim=gene_dim,
+            train_set_size=train_set_size,
+            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -611,6 +605,7 @@ class MLPAutoEncoder(BaseAutoEncoder):
             lr_scheduler=lr_scheduler,
             lr_scheduler_kwargs=lr_scheduler_kwargs,
             supervised_subset=supervised_subset,
+            donor_subset=donor_subset,
         )
 
         self.encoder = MLP(
@@ -655,33 +650,11 @@ class MLPAutoEncoder(BaseAutoEncoder):
         self.masking_rate = masking_rate
         self.masking_strategy = masking_strategy
         self.encoded_gene_program = encoded_gene_program
-        self.num_hvgs = num_hvgs
 
-        if hvg:
-            root = os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )
-            )
-            self.hvg_indices = pickle.load(
-                open(
-                    root
-                    + "/self_supervision/data/hvg_"
-                    + str(self.num_hvgs)
-                    + "_indices.pickle",
-                    "rb",
-                )
-            )
-        else:
-            self.hvg_indices = None
-        
+
     def _step(self, batch, training=True):
         targets = batch["X"]
         inputs = batch["X"]
-
-        if self.hvg_indices is not None:
-            inputs = inputs[:, self.hvg_indices]
-            targets = targets[:, self.hvg_indices]
 
         if self.masking_rate and self.masking_strategy == "random":
             mask = (
@@ -790,8 +763,6 @@ class MLPAutoEncoder(BaseAutoEncoder):
         return x_reconst, loss
 
     def predict_embedding(self, batch):
-        if self.hvg_indices is not None:
-            batch["X"] = batch["X"][:, self.hvg_indices]
         return self.encoder(batch["X"])
 
     def forward(self, x_in):
@@ -800,54 +771,62 @@ class MLPAutoEncoder(BaseAutoEncoder):
         return x_latent, x_reconst
 
     def training_step(self, batch, batch_idx):
-        if self.supervised_subset is not None:
-            mask = batch["dataset_id"] == self.supervised_subset
-            if not any(mask):
-                return  # Skip the batch if no items match the condition
-
-            # Filter the batch based on the mask
-            batch = {key: value[mask] for key, value in batch.items()}
+        batch = self.filter_batch(batch)
+        if batch is None:
+            return None
         x_reconst, loss = self._step(batch)
-        if self.hvg_indices is not None:
-            batch["X"] = batch["X"][:, self.hvg_indices]
         self.log_dict(
             self.train_metrics(x_reconst, batch["X"]), on_epoch=True, on_step=True
         )
         self.log("train_loss", loss, on_epoch=True, on_step=True)
+        self.log("train_loss_epoch", loss, on_epoch=True, on_step=True)
         if batch_idx % self.gc_freq == 0:
             gc.collect()
-
+        # Log the fraction of genes masked
         return loss
 
     def validation_step(self, batch, batch_idx):
-        if self.supervised_subset is not None:
-            mask = batch["dataset_id"] == self.supervised_subset
-            if not any(mask):
-                return  # Skip the batch if no items match the condition
-            # Filter the batch based on the mask
-            batch = {key: value[mask] for key, value in batch.items()}
+        batch = self.filter_batch(batch)
         x_reconst, loss = self._step(batch, training=False)
-        if self.hvg_indices is not None:
-            batch["X"] = batch["X"][:, self.hvg_indices]
         self.log_dict(self.val_metrics(x_reconst, batch["X"]))
         self.log("val_loss", loss)
         if batch_idx % self.gc_freq == 0:
             gc.collect()
 
     def test_step(self, batch, batch_idx):
-        if self.supervised_subset is not None:
-            mask = batch["dataset_id"] == self.supervised_subset
-            # Filter the batch based on the mask
-            batch = {key: value[mask] for key, value in batch.items()}
+        batch = self.filter_batch(batch)
         x_reconst, loss = self._step(batch, training=False)
-        if self.hvg_indices is not None:
-            batch["X"] = batch["X"][:, self.hvg_indices]
         metrics = self.test_metrics(x_reconst, batch["X"])
         self.log_dict(metrics)
         self.log("test_loss", loss)
         if batch_idx % self.gc_freq == 0:
             gc.collect()
         return metrics
+    
+    def filter_batch(self, batch):
+        if self.supervised_subset is not None:
+            mask = batch["dataset_id"] == self.supervised_subset
+            if not mask:
+                return None # Skip the batch if no items match the condition
+
+            # Filter the batch based on the mask
+            batch = {key: value[mask] for key, value in batch.items()}
+        # Donor subset only in train mode
+        if self.donor_subset is not None and self.training:
+
+            # Ensure donor IDs are on CPU for membership checking
+            donor_ids = batch["donor_id"].cpu().numpy()
+
+            mask = np.isin(donor_ids, list(self.donor_subset))
+
+            # continue if mask contains no True values
+            if not mask.any():
+                print('No items in batch match the donor subset condition')
+                return None
+            # Filter the batch based on the mask
+            batch = {key: value[mask] for key, value in batch.items()}
+        return batch
+
 
     def predict_cell_types(self, x: torch.Tensor):
         return F.softmax(self(x)[0], dim=1)
@@ -861,7 +840,7 @@ class MLPAutoEncoder(BaseAutoEncoder):
         # Apply dataset_id filtering only if supervised_subset is set
         if self.supervised_subset is not None:
             mask = batch["dataset_id"] == self.supervised_subset
-            if not any(mask):
+            if not mask:
                 return None  # Skip the batch if no items match the condition
 
             # Filter the batch based on the mask
@@ -881,8 +860,6 @@ class MLPAutoEncoder(BaseAutoEncoder):
                 return x_reconst, batch["X"]
 
     def get_input(self, batch):
-        if self.hvg_indices is not None:
-            batch["X"] = batch["X"][:, self.hvg_indices]
         return batch["X"]
 
 
@@ -894,9 +871,9 @@ class MLPNegBin(BaseAutoEncoder):
         gene_dim (int): Dimensionality of the gene input.
         units_encoder (List[int]): List of integers specifying the number of hidden units in each encoder layer.
         units_decoder (List[int]): List of integers specifying the number of hidden units in each decoder layer.
+        train_set_size (int): Size of the training set.
+        val_set_size (int): Size of the validation set.
         batch_size (int): Batch size.
-        hvg (bool): Flag indicating whether to use highly variable genes (HVGs) for training.
-        num_hvgs (int): Number of highly variable genes to use.
         supervised_subset (Optional[int]): Subset of the data to use for supervised training. Default is None.
         learning_rate (float): Learning rate for the optimizer. Default is 0.005.
         weight_decay (float): Weight decay for the optimizer. Default is 0.1.
@@ -918,8 +895,6 @@ class MLPNegBin(BaseAutoEncoder):
         masking_rate (Optional[float]): Rate of masking for input data.
         masking_strategy (Optional[str]): Masking strategy for input data.
         encoded_gene_program (Optional[Dict]): Encoded gene program.
-        num_hvgs (int): Number of highly variable genes.
-        hvg_indices (Optional[List[int]]): Indices of highly variable genes.
     """
 
     def __init__(
@@ -927,9 +902,9 @@ class MLPNegBin(BaseAutoEncoder):
         gene_dim: int,
         units_encoder: List[int],
         units_decoder: List[int],
+        train_set_size: int,
+        val_set_size: int,
         batch_size: int,
-        hvg: bool = False,
-        num_hvgs: int = 2000,
         supervised_subset: Optional[int] = None,
         gene_likelihood: str = "nb",  # 'zinb', 'nb', 'poisson'
         learning_rate: float = 0.005,
@@ -946,6 +921,8 @@ class MLPNegBin(BaseAutoEncoder):
     ):
         super(MLPNegBin, self).__init__(
             gene_dim=gene_dim,
+            train_set_size=train_set_size,
+            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -958,8 +935,6 @@ class MLPNegBin(BaseAutoEncoder):
         self.masking_rate = masking_rate
         self.masking_strategy = masking_strategy
         self.encoded_gene_program = encoded_gene_program
-        self.num_hvgs = num_hvgs
-        self.hvg_indices = self.load_hvg_indices(hvg, num_hvgs)
         self.gene_likelihood = gene_likelihood
         self.gene_dim = gene_dim
 
@@ -1023,33 +998,6 @@ class MLPNegBin(BaseAutoEncoder):
         else:
             raise ValueError(f"Invalid gene_likelihood: {self.gene_likelihood}")
 
-    def load_hvg_indices(self, hvg: bool, num_hvgs: int):
-        """
-        Load the indices of highly variable genes.
-
-        Args:
-            hvg (bool): Flag indicating whether to use highly variable genes.
-            num_hvgs (int): Number of highly variable genes.
-
-        Returns:
-            Optional[List[int]]: List of indices of highly variable genes, or None if hvg is False.
-        """
-        if hvg:
-            root = os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )
-            )
-            return pickle.load(
-                open(
-                    root
-                    + "/self_supervision/data/hvg_"
-                    + str(num_hvgs)
-                    + "_indices.pickle",
-                    "rb",
-                )
-            )
-        return None
 
     def forward(self, x_in):
         """
@@ -1139,10 +1087,6 @@ class MLPNegBin(BaseAutoEncoder):
         """
         targets = batch["X"]
         inputs = batch["X"]
-
-        if self.hvg_indices is not None:
-            inputs = inputs[:, self.hvg_indices]
-            targets = targets[:, self.hvg_indices]
 
         if self.masking_rate and self.masking_strategy == "random":
             mask = (
@@ -1403,8 +1347,6 @@ class MLPNegBin(BaseAutoEncoder):
         Returns:
             torch.Tensor: Embedding tensor.
         """
-        if self.hvg_indices is not None:
-            batch["X"] = batch["X"][:, self.hvg_indices]
         return self.encoder(batch["X"])
 
     def training_step(self, batch, batch_idx):
@@ -1420,8 +1362,8 @@ class MLPNegBin(BaseAutoEncoder):
         """
         if self.supervised_subset is not None:
             mask = batch["dataset_id"] == self.supervised_subset
-            if not any(mask):
-                return
+            if not mask:
+                return None
 
             batch = {key: value[mask] for key, value in batch.items()}
         x_latent, loss, _ = self._step(batch)
@@ -1441,8 +1383,8 @@ class MLPNegBin(BaseAutoEncoder):
         """
         if self.supervised_subset is not None:
             mask = batch["dataset_id"] == self.supervised_subset
-            if not any(mask):
-                return
+            if not mask:
+                return None
 
             batch = {key: value[mask] for key, value in batch.items()}
         x_latent, loss, _ = self._step(batch, training=False)
@@ -1462,8 +1404,6 @@ class MLPNegBin(BaseAutoEncoder):
             mask = batch["dataset_id"] == self.supervised_subset
             batch = {key: value[mask] for key, value in batch.items()}
         x_latent, loss, x_reconst = self._step(batch, training=False)
-        if self.hvg_indices is not None:
-            batch["X"] = batch["X"][:, self.hvg_indices]
         metrics = self.test_metrics(x_reconst, batch["X"])
         self.log_dict(metrics)
         self.log("test_loss", loss)
@@ -1482,9 +1422,9 @@ class MLPClassifier(BaseClassifier):
         class_weights (np.ndarray): Array of class weights for loss calculation.
         child_matrix (np.ndarray): Matrix representing the hierarchical relationship between cell types.
         units (List[int]): List of hidden unit sizes for the MLP.
+        train_set_size (int): Size of the training set.
+        val_set_size (int): Size of the validation set.
         batch_size (int): Batch size for training and inference.
-        hvg (bool): Flag indicating whether to use highly variable genes.
-        num_hvgs (int): Number of highly variable genes to use.
         supervised_subset (Optional[int], optional): Subset of the data to use for supervised training. Defaults to None.
         dropout (float, optional): Dropout rate. Defaults to 0.0.
         learning_rate (float, optional): Learning rate for optimizer. Defaults to 0.005.
@@ -1501,9 +1441,9 @@ class MLPClassifier(BaseClassifier):
         class_weights: np.ndarray,
         child_matrix: np.ndarray,
         units: List[int],
+        train_set_size: int,
+        val_set_size: int,
         batch_size: int,
-        hvg: bool = False,
-        num_hvgs: int = 2000,
         supervised_subset: Optional[int] = None,
         dropout: float = 0.0,
         learning_rate: float = 0.005,
@@ -1517,9 +1457,9 @@ class MLPClassifier(BaseClassifier):
             type_dim=type_dim,
             class_weights=class_weights,
             child_matrix=child_matrix,
+            train_set_size=train_set_size,
+            val_set_size=val_set_size,
             batch_size=batch_size,
-            hvg=hvg,
-            num_hvgs=num_hvgs,
             supervised_subset=supervised_subset,
             learning_rate=learning_rate,
             weight_decay=weight_decay,
@@ -1586,10 +1526,16 @@ class MLPClassifier(BaseClassifier):
 
         # Apply dataset_id filtering only if supervised_subset is set
         if self.supervised_subset is not None:
-            mask = batch["dataset_id"] == self.supervised_subset
-            if not any(mask):
-                return None, None  # Skip the batch if no items match the condition
+            
+            # Ensure supervised_subset is a list or set
+            if not isinstance(self.supervised_subset, (list, set)):
+                self.supervised_subset = [self.supervised_subset]
 
+            mask = torch.tensor([id in self.supervised_subset for id in batch["dataset_id"]], dtype=torch.bool, device=batch["dataset_id"].device)
+
+            if not any(mask):
+                return None
+            
             filtered_batch = {key: value[mask] for key, value in batch.items()}
 
             if predict_embedding:
@@ -1647,15 +1593,15 @@ class MLPBYOL(BaseAutoEncoder):
         gene_dim: int,
         units_encoder: List[int],
         # params from datamodule
-        batch_size: int,
+        train_set_size: int,
+        val_set_size: int,
+        batch_size: int,  # to send a mock image to the BYOL model
         # contrastive learning params
-        backbone: str,  # MLP, TabNet
-        augment_type: str,  # Gaussian, Uniform
-        augment_intensity: float,
         use_momentum: bool,
+        p: float=0.5,  # likelihood to apply augmentations
+        negbin_intensity: float=0.1,  # intensity of the negative binomial noise
+        dropout_intensity: float=0.1,  # intensity of the dropout augmentation
         # model specific params
-        hvg: bool = False,
-        num_hvgs: int = 2000,
         lr: float = 0.005,
         weight_decay: float = 0.1,
         dropout: float = 0.1,
@@ -1667,10 +1613,14 @@ class MLPBYOL(BaseAutoEncoder):
         # check input
         assert 0.0 <= dropout <= 1.0
 
+        self.train_set_size = train_set_size
+        self.val_set_size = val_set_size
         self.batch_size = batch_size
 
         super(MLPBYOL, self).__init__(
             gene_dim=gene_dim,
+            train_set_size=train_set_size,
+            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=lr,
             weight_decay=weight_decay,
@@ -1680,54 +1630,32 @@ class MLPBYOL(BaseAutoEncoder):
         )
 
         # assign inner model, that will be trained using the BYOL / SimSiam framework
-        self.backbone = backbone
         self.gene_dim = gene_dim
+        self.batch_size = batch_size
         self.units_encoder = units_encoder
         self.activation = activation
         self.dropout = dropout
         self.inner_model = self._get_inner_model()
-        self.num_hvgs = num_hvgs
 
         self.byol = BYOL(
             net=self.inner_model,
             image_size=self.gene_dim,
-            augment_type=augment_type,
-            augment_intensity=augment_intensity,
-            batch_size=self.batch_size,
+            batch_size=self.batch_size, 
+            p=p,  # likelihood to apply augmentations
+            negbin_intensity=negbin_intensity,  # intensity of the negative binomial noise
+            dropout_intensity=dropout_intensity,  # intensity of the dropout augmentation
             use_momentum=use_momentum,
         )
 
-        if hvg:
-            root = os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )
-            )
-            self.hvg_indices = pickle.load(
-                open(
-                    root
-                    + "/self_supervision/data/hvg_"
-                    + str(self.num_hvgs)
-                    + "_indices.pickle",
-                    "rb",
-                )
-            )
-        else:
-            self.hvg_indices = None
 
     def _get_inner_model(self):
-        if self.backbone == "MLP":
-            self.inner_model = MLP(
-                in_channels=self.gene_dim,
-                hidden_channels=self.units_encoder,
-                activation_layer=self.activation,
-                inplace=False,
-                dropout=self.dropout,
-            )
-        elif self.backbone == "TabNet":
-            raise NotImplementedError
-        else:
-            raise NotImplementedError
+        self.inner_model = MLP(
+            in_channels=self.gene_dim,
+            hidden_channels=self.units_encoder,
+            activation_layer=self.activation,
+            inplace=False,
+            dropout=self.dropout,
+        )
         return self.inner_model
 
     def _step(self, batch):
@@ -1740,8 +1668,6 @@ class MLPBYOL(BaseAutoEncoder):
         return self.encoder(batch["X"])
 
     def forward(self, batch):
-        if self.hvg_indices is not None:
-            batch["X"] = batch["X"][:, self.hvg_indices]
         return self.byol(batch["X"])
 
     def training_step(self, batch, batch_idx):
@@ -1769,10 +1695,12 @@ class MLPBYOL(BaseAutoEncoder):
             gc.collect()
         return x_reconst, batch
 
+
 # helper
 class DictAsAttributes:
     def __init__(self, dictionary):
         self.__dict__.update(dictionary)
+
 
 class MLPBarlowTwins(BaseAutoEncoder):
     def __init__(
@@ -1781,14 +1709,13 @@ class MLPBarlowTwins(BaseAutoEncoder):
         gene_dim: int,
         units_encoder: List[int],
         # params from datamodule
-        CHECKPOINT_PATH: str,
-        augment_intensity: float,
         train_set_size: int,
+        val_set_size: int,
         batch_size: int,
-        hvg: bool = False,
-        num_hvgs: int = 2000,
         # contrastive learning params
-        backbone: str = 'MLP',  # MLP, TabNet
+        CHECKPOINT_PATH: str,
+        negbin_intensity: float=0.1,  # intensity of the negative binomial noise
+        dropout_intensity: float=0.1,  # intensity of the dropout augmentation
         learning_rate_weights: float = 0.2,
         learning_rate_biases: float = 0.0048,
         lambd: float = 0.0051,
@@ -1805,6 +1732,8 @@ class MLPBarlowTwins(BaseAutoEncoder):
 
         super(MLPBarlowTwins, self).__init__(
             gene_dim=gene_dim,
+            train_set_size=train_set_size,
+            val_set_size=val_set_size,
             batch_size=batch_size,
             learning_rate=lr,
             weight_decay=weight_decay,
@@ -1818,49 +1747,28 @@ class MLPBarlowTwins(BaseAutoEncoder):
 
         self.best_val_loss = np.inf
         self.best_train_loss = np.inf
-        self.num_hvgs = num_hvgs
+
         self.train_set_size = train_set_size
+        self.val_set_size = val_set_size
         self.batch_size = batch_size
         self.weight_decay = weight_decay
         self.learning_rate_weights = learning_rate_weights
         self.learning_rate_biases = learning_rate_biases
         self.lambd = lambd
 
-
         self.loader_length = self.train_set_size // self.batch_size
 
         self.step = 0  # for optimizer
 
         # assign inner model, that will be trained using the BYOL / SimSiam framework
-        self.backbone = backbone
         self.gene_dim = gene_dim
         self.units_encoder = units_encoder
         self.activation = activation
         self.dropout = dropout
         self.batch_size = batch_size
 
-        self.hvg = hvg
-
-        self.transform = Transform(p=augment_intensity)
+        self.transform = Transform(negbin_intensity=negbin_intensity, dropout_intensity=dropout_intensity)
         self.CHECKPOINT_PATH = CHECKPOINT_PATH
-
-        if hvg:
-            root = os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                )
-            )
-            self.hvg_indices = pickle.load(
-                open(
-                    root
-                    + "/self_supervision/data/hvg_"
-                    + str(self.num_hvgs)
-                    + "_indices.pickle",
-                    "rb",
-                )
-            )
-        else:
-            self.hvg_indices = None
 
         inner_model = self._get_inner_model()
 
@@ -1878,18 +1786,15 @@ class MLPBarlowTwins(BaseAutoEncoder):
         return self.barlow_twins
 
     def _get_inner_model(self):
-        if self.backbone == "MLP":
-            self.inner_model = MLP(
-                in_channels=self.gene_dim,
-                hidden_channels=self.units_encoder,
-                activation_layer=self.activation,
-                inplace=False,
-                dropout=self.dropout,
-            )
-        else:
-            raise NotImplementedError
+        self.inner_model = MLP(
+            in_channels=self.gene_dim,
+            hidden_channels=self.units_encoder,
+            activation_layer=self.activation,
+            inplace=False,
+            dropout=self.dropout,
+        )
         return self.inner_model
-
+    
     def _prepare_barlow_twins_args(self):
         # Prepare Barlow Twins arguments based on the required parameters
         args = {
@@ -1913,10 +1818,7 @@ class MLPBarlowTwins(BaseAutoEncoder):
         # For Multiomics, batch['X'] has additional dim to squeeze
         if batch["X"].dim() == 3:
             batch["X"] = batch["X"].squeeze(1)
-        if self.hvg_indices is not None:
-            x_in = batch["X"][:, self.hvg_indices]
-        else:
-            x_in = batch["X"]
+        x_in = batch["X"]
         # Modify the forward pass to use the Barlow Twins model (from class B)
         loss = self(x_in)
         return loss

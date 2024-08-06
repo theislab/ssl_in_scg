@@ -2,7 +2,6 @@ import os
 from math import ceil
 from os.path import join
 from typing import Dict, List
-
 import lightning.pytorch as pl
 import merlin.io
 from merlin.dataloader.torch import Loader
@@ -12,6 +11,7 @@ from torch.utils.data import Dataset, DataLoader
 import h5py
 import torch
 import numpy as np
+
 
 PARQUET_SCHEMA = {
     "X": float32,
@@ -48,6 +48,7 @@ def _merlin_dataset_factory(path: str, columns: List[str], dataset_kwargs: Dict)
         ),
         **dataset_kwargs,
     )
+
 
 
 def _set_default_kwargs_dataloader(kwargs: Dict[str, any], train: bool = True):
@@ -122,6 +123,7 @@ class MerlinDataModule(pl.LightningDataModule):
             dataloader_kwargs_inference, train=False
         )
         self.dataset_id_filter = dataset_id_filter
+        self.batch_size = batch_size
 
         self.train_dataset = _merlin_dataset_factory(
             _get_data_files(path, "train", sub_sample_frac),
@@ -138,8 +140,6 @@ class MerlinDataModule(pl.LightningDataModule):
             columns,
             _set_default_kwargs_dataset(dataset_kwargs_inference, train=False),
         )
-
-        self.batch_size = batch_size
 
     def train_dataloader(self):
         return Loader(
@@ -169,7 +169,6 @@ class MerlinDataModule(pl.LightningDataModule):
             **self.dataloader_kwargs_inference,
         )
 
-
 class MultiomicsDataloader(Dataset):
     def __init__(self, proteins, genes, batches):
         self.proteins = proteins
@@ -186,18 +185,23 @@ class MultiomicsDataloader(Dataset):
             "batch": self.batches[idx],
         }
         return batch
+    
 
-
-class AdataDataset(Dataset):
-    def __init__(self, genes, perturbations):
-        self.genes = genes
-        self.perturbations = perturbations
+class ATACDataloader(Dataset):
+    def __init__(self, atac, rna, batches):
+        self.atac = atac
+        self.rna = rna
+        self.batches = batches
 
     def __len__(self):
-        return len(self.genes)
+        return self.atac.shape[0]
 
     def __getitem__(self, idx):
-        batch = {"X": self.genes[idx], "perturbations": self.perturbations[idx]}
+        batch = {
+            "X": np.array(self.rna[idx], dtype=np.float32),
+            "atac": np.array(self.atac[idx].toarray().flatten(), dtype=np.float32),
+            "batch": self.batches[idx],
+        }
         return batch
 
 

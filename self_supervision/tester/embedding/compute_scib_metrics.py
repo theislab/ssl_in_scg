@@ -5,6 +5,7 @@ from scib_metrics.benchmark import Benchmarker, BioConservation
 import faiss
 from scib_metrics.nearest_neighbors import NeighborsOutput
 import argparse
+from self_supervision.paths import RESULTS_FOLDER
 
 
 def cal_scib_metrics(adata):
@@ -34,7 +35,6 @@ def cal_scib_metrics(adata):
     )
     bm.prepare(neighbor_computer=faiss_brute_force_nn)
     bm.benchmark()
-    # bm.plot_results_table(save_dir=f'/lustre/groups/ml01/workspace/mojtaba.bahrami/ssl_results/embedding/{split}', min_max_scale=False)
 
     df = bm.get_results(min_max_scale=False)
     return df
@@ -44,15 +44,16 @@ def cal_scib_metrics(adata):
 if __name__ == '__main__':
     def parse_args():
         parser = argparse.ArgumentParser()
-        parser.add_argument('--data_dir', type=str, default='/lustre/groups/ml01/workspace/mojtaba.bahrami/ssl_results')
         parser.add_argument('--input_file', type=str, default='adata_test_embs_scib.h5ad')
         parser.add_argument('--output_file', type=str, default='test_scib_scores.csv')
         return parser.parse_args()
 
     args = parse_args()
 
+    EMB_RESULT_FOLDER = os.path.join(RESULTS_FOLDER, 'embedding')
+
     split = args.split
-    adata = sc.read_h5ad(os.path.join(args.data_dir, args.input_file))
+    adata = sc.read_h5ad(os.path.join(EMB_RESULT_FOLDER, args.input_file))
     df = cal_scib_metrics(adata)
     df.to_csv(os.path.join(args.data_dir, args.output_file))
     
