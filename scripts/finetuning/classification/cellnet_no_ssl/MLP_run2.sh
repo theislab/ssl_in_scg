@@ -19,4 +19,4 @@ fi
 
 cd $SSL_PROJECT_HOME/self_supervision/trainer/classifier
 
-CUBLAS_WORKSPACE_CONFIG=:16:8 python -u train.py --version="run2" --lr=9e-4 --dropout=0.1 --weight_decay=0.05 --stochastic
+CUBLAS_WORKSPACE_CONFIG=:16:8 python -u cellnet_mlp.py --version="run2" --lr=9e-4 --dropout=0.1 --weight_decay=0.05 --stochastic

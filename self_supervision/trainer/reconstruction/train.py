@@ -5,7 +5,7 @@ from lightning.pytorch.callbacks import (
     TQDMProgressBar,
     LearningRateMonitor,
 )
-from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.loggers import TensorBoardLogger, WandbLogger
 from lightning.pytorch.utilities.model_summary import ModelSummary
 import os
 from pathlib import Path
@@ -14,7 +14,7 @@ from self_supervision.data.checkpoint_utils import (
     checkpoint_exists,
 )
 from self_supervision.estimator.cellnet import EstimatorAutoEncoder
-from self_supervision.paths import DATA_DIR, TRAINING_FOLDER
+
 
 def update_weights(pretrained_dir, estim):
     """
@@ -134,18 +134,52 @@ def parse_args():
     parser.add_argument("--version", type=str, default="")
     parser.add_argument("--checkpoint_interval", type=int, default=1)
     parser.add_argument(
+        "--hvg", action="store_true", help="Whether to use highly variable genes"
+    )
+    parser.add_argument(
+        "--num_hvgs",
+        default=2000,
+        type=int,
+        help="Number of highly variable genes to use",
+    )
+    parser.add_argument(
         "--stochastic", action="store_true", help="Whether to use a random seed"
     )
     parser.add_argument(
         "--pert", action="store_true", help="Whether to use a random seed"
+    )
+    parser.add_argument(
+        "--data_path",
+        default="/lustre/groups/ml01/workspace/till.richter/merlin_cxg_2023_05_15_sf-log1p",
+        type=str,
+        help="Path to the data stored as parquet files",
+    )
+    # Old, 10M dataset: '/lustre/scratch/users/till.richter/merlin_cxg_simple_norm_parquet'
+    parser.add_argument(
+        "--model_path",
+        default="/lustre/groups/ml01/workspace/till.richter/",
+        type=str,
+        help="Path where the lightning checkpoints are stored",
+    )
+    parser.add_argument(
+    "--max_steps",
+    default=123794,
+    type=int,
+    help="number of max epochs before stopping training",
+    )
+    parser.add_argument(
+    "--log_freq",
+    default=10,
+    type=int,
+    help="logging frequency",
     )
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     # GET GPU AND ARGS
-    if torch.cuda.is_available():
-        print(f'CUDA_VISIBLE_DEVICES: {os.environ["CUDA_VISIBLE_DEVICES"]}')
+    # if torch.cuda.is_available():
+    #     print(f'CUDA_VISIBLE_DEVICES: {os.environ["CUDA_VISIBLE_DEVICES"]}')
     args = parse_args()
     print(args)
 
@@ -154,6 +188,15 @@ if __name__ == "__main__":
         torch.manual_seed(0)
 
     # CHECKPOINT HANDLING
+    if args.hvg:
+        use_hvg = "HVG_"
+    elif args.pert:
+        use_hvg = "PERT_"
+        args.hvg = True  # For the Estimator
+        num_hvgs = 1000  # For the Estimator
+    else:
+        use_hvg = ""
+        num_hvgs = None
 
     if args.pretrained_dir:
         if "classification" in args.pretrained_dir:
@@ -189,19 +232,22 @@ if __name__ == "__main__":
     elif args.supervised_subset == "PBMC":
         subfolder = subfolder + "_PBMC"
         supervised_subset = 41
+    else:
+        supervised_subset=None
 
     CHECKPOINT_PATH = os.path.join(
-        TRAINING_FOLDER,
+        args.model_path,
+        "trained_models",
         "final_models",
         "reconstruction",
-        "CN_" + subfolder,
+        "CN_" + use_hvg + subfolder,
     )
     print("Will save model to", CHECKPOINT_PATH)
     Path(CHECKPOINT_PATH).mkdir(parents=True, exist_ok=True)
 
     # get estimator
     estim = EstimatorAutoEncoder(
-        data_path=os.path.join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p")
+        data_path=args.data_path, hvg=args.hvg, num_hvgs=num_hvgs
     )
 
     # set up datamodule
@@ -209,7 +255,7 @@ if __name__ == "__main__":
 
     estim.init_trainer(
         trainer_kwargs={
-            "max_epochs": 1000,
+            "max_steps": args.max_steps,
             "gradient_clip_val": 1.0,
             "gradient_clip_algorithm": "norm",
             "default_root_dir": CHECKPOINT_PATH,
@@ -217,8 +263,8 @@ if __name__ == "__main__":
             "devices": 1,
             "num_sanity_val_steps": 0,
             "check_val_every_n_epoch": 1,
-            "logger": [TensorBoardLogger(CHECKPOINT_PATH, name="default")],
-            "log_every_n_steps": 100,
+            "logger": [WandbLogger(save_dir=CHECKPOINT_PATH)],
+            "log_every_n_steps": args.log_freq,
             "detect_anomaly": False,
             "enable_progress_bar": True,
             "enable_model_summary": False,

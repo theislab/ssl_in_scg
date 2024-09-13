@@ -1,4 +1,8 @@
-# github.com/facebookresearch/barlowtwins
+# Copyright (c) Facebook, Inc. and its affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
 
 """
 Adaptions from original implementation:
@@ -9,8 +13,6 @@ import math
 import os
 from torch import nn, optim
 import torch
-
-from self_supervision.models.contrastive.data_augmentations import DropoutAugmentation, NegBinNoise
 
 
 def adjust_learning_rate(args, optimizer, loader_length, step):
@@ -157,17 +159,37 @@ class LARS(optim.Optimizer):
                 p.add_(mu, alpha=-g["lr"])
 
 
+class GaussianBlur(object):
+    def __init__(self, p: float):
+        """
+        Initialize the GaussianBlur class with standard deviation of the gaussian noise
+        :param p: (float) the standard deviation of the gaussian noise
+        """
+        self.p = p
+
+    def __call__(self, img: torch.Tensor) -> torch.Tensor:
+        """
+        Apply Gaussian blur to the input image
+        :param img: input image
+        :return: image after applying gaussian blur
+        """
+        # create new tensor with same shape as img and random noise with mean 0 and std = self.p
+        # new_img = torch.tensor(img) + torch.tensor(img).new(img.shape).random_(mean=0, std=self.p)
+        # this one works
+        new_img = img.clone().detach().requires_grad_(True) + img.clone().detach().new(
+            img.shape
+        ).normal_(mean=0, std=self.p)
+        # Clamp the image pixel values between 0 and 1
+        return torch.clamp(new_img, min=0)
+
+
 class Transform:
-    def __init__(self, negbin_intensity: float, dropout_intensity: float):
-        """
-        In Barlow Twins the data augmentation is always applied.
-        In the original implementation the data augmentation is applied stronger on one of the two images.
-        Instead, we keep one version of the image without data augmentation ("original" for scRNA-seq data).
-        """
-        self.negbin = NegBinNoise(intensity=negbin_intensity)
-        self.dropout = DropoutAugmentation(intensity=dropout_intensity)
+    def __init__(self, p: float):
+        # Instead of images we have a vector and hence we only apply the GaussianBlur
+        self.transform = GaussianBlur(p=p)
+        self.transform_prime = GaussianBlur(p=0.1 * p)
 
     def __call__(self, x):
-        y1 = self.negbin(x)
-        y1 = self.dropout(y1)
-        return y1, x
+        y1 = self.transform(x)
+        y2 = self.transform_prime(x)
+        return y1, y2

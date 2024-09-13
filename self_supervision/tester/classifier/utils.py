@@ -4,7 +4,6 @@ import pandas as pd
 import dask.dataframe as dd
 from numba import njit
 from sklearn.metrics import classification_report
-from  self_supervision.paths import DATA_DIR, RESULTS_FOLDER
 
 
 @njit
@@ -47,6 +46,7 @@ def correct_labels(y_true: np.ndarray, y_pred: np.ndarray, child_matrix: np.ndar
 
 
 def prepare_clf_report(
+    RESULT_PATH: str = "/lustre/groups/ml01/workspace/till.richter/ssl_results",
     setting: str = "CellNet",
     reference: str = "val",
 ) -> pd.DataFrame:
@@ -54,6 +54,7 @@ def prepare_clf_report(
     Prepare the classification report for a given setting and reference.
 
     Args:
+        RESULT_PATH (str): The path to the result directory. Default is '/lustre/groups/ml01/workspace/till.richter/ssl_results'.
         setting (str): The setting for the classification report. Default is 'CellNet'.
         reference (str): The reference for the classification report. Default is 'val'.
 
@@ -62,7 +63,7 @@ def prepare_clf_report(
 
     """
     clf_report_path = os.path.join(
-        RESULTS_FOLDER, "classification", reference + "_clf_report_" + setting + "_knn.csv"
+        RESULT_PATH, "classification", reference + "_clf_report_" + setting + "_knn.csv"
     )
     if not os.path.exists(clf_report_path):
         clf_report = pd.DataFrame(
@@ -90,33 +91,36 @@ def prepare_clf_report(
 
 
 def prepare_per_class_clf_report(
+    RESULT_PATH: str = "/lustre/groups/ml01/workspace/till.richter/ssl_results",
+    DATA_PATH: str = "/lustre/groups/ml01/workspace/till.richter/merlin_cxg_2023_05_15_sf-log1p/",
     supervised_subset: int = None,
 ) -> pd.DataFrame:
     """
     Prepare the per-class classification report.
 
     Args:
+        RESULT_PATH (str): Path to the result directory. Default is '/lustre/groups/ml01/workspace/till.richter/ssl_results'.
+        DATA_PATH (str): Path to the data directory. Default is '/lustre/groups/ml01/workspace/till.richter/merlin_cxg_2023_05_15_sf-log1p/'.
         supervised_subset (int): Subset ID for supervised training. Default is None.
 
     Returns:
         pd.DataFrame: The per-class classification report.
 
     """
-    STORE_DIR = os.path.join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p")
     # Get all labels for the given setting
     # Load true labels
     if supervised_subset is None:
         all_labels = (
-            dd.read_parquet(os.path.join(STORE_DIR, "labels"), columns=["cell_type"])
+            dd.read_parquet(os.path.join(DATA_PATH, "labels"), columns=["cell_type"])
             .compute()
             .to_numpy()
         )
     else:
         test_labels_reference = dd.read_parquet(
-            os.path.join(STORE_DIR, "test"), columns=["dataset_id"]
+            os.path.join(DATA_PATH, "test"), columns=["dataset_id"]
         )
         all_labels = dd.read_parquet(
-            os.path.join(STORE_DIR, "test"), columns=["cell_type"]
+            os.path.join(DATA_PATH, "test"), columns=["cell_type"]
         )
         all_labels = (
             all_labels[test_labels_reference["dataset_id"] == supervised_subset]
@@ -125,7 +129,7 @@ def prepare_per_class_clf_report(
         )
 
     clf_report_path = os.path.join(
-        RESULTS_FOLDER,
+        RESULT_PATH,
         "classification",
         "per_class_" + str(supervised_subset) + "_per_class_clf_report_knn.csv",
     )
@@ -249,6 +253,9 @@ def update_clf_report(
 def update_per_class_clf_report(
     y_pred_corr: np.array,
     y_true: np.array,
+    model_dir: str,
+    clf_report_path: str,
+    supervised_subset: int,
     is_supervised: bool = False,
 ) -> None:
     """
@@ -264,7 +271,7 @@ def update_per_class_clf_report(
             Defaults to False.
 
     Returns:
-        clf_report (pd.DataFrame): Updated classification report DataFrame.
+        None
     """
     # Create and transpose the classification report
     clf_report_i = pd.DataFrame(

@@ -14,16 +14,17 @@ def load_last_checkpoint(CHECKPOINT_PATH):
     versions = []
     for root, dirs, files in os.walk(CHECKPOINT_PATH):
         for file in files:
-            if file.endswith('.ckpt'):
+            if file.endswith('.ckpt') and 'last' in file:
                 # get the path to the checkpoint
                 checkpoint_path = os.path.join(root, file)
                 print('Found checkpoint: ', checkpoint_path)
                 ckpt_dirs.append(checkpoint_path)
-                versions.append(int(checkpoint_path.split('version_')[1].split('/')[0]))
+                # versions.append(int(checkpoint_path.split('version_')[1].split('/')[0]))
 
     # get the index of the highest version in the versions list
-    highest_version_index = versions.index(max(versions))
-    latest_ckpt = ckpt_dirs[highest_version_index]
+    # highest_version_index = versions.index(max(versions))
+    # latest_ckpt = ckpt_dirs[highest_version_index]
+    latest_ckpt = ckpt_dirs[0]
     return latest_ckpt
 
 

@@ -4,9 +4,10 @@ import pandas as pd
 
 
 # convert batch (categorical) into numerical
-def one_hot_encode(labels, num_labels=12):
+def one_hot_encode(labels):
     unique_labels = np.unique(labels)  # Get unique labels
 
+    num_labels = 12
     num_samples = len(labels)
 
     one_hot_encoded = np.zeros((num_samples, num_labels), dtype=int)
@@ -91,20 +92,3 @@ def encode_gene_program(overlapped_genes: np.ndarray, query_adata) -> np.ndarray
     for i, gene_set in enumerate(overlapped_genes):
         encoded_genes[i] = np.isin(query_genes, gene_set).astype(int)
     return encoded_genes
-
-
-def load_enc_weights(ae_model, pretrained_dict):
-    """
-    Load encoder weights from a pretrained autoencoder model
-    Disregard decoder weights
-    """
-    model_dict = ae_model.state_dict()
-    # 1. filter out unnecessary keys
-    pretrained_dict = {
-        k: v for k, v in pretrained_dict.items() if k in model_dict and "decoder" not in k
-    }
-    # 2. overwrite entries in the existing state dict
-    model_dict.update(pretrained_dict)
-    # 3. load the new state dict
-    ae_model.load_state_dict(model_dict, strict=False)
-    return ae_model

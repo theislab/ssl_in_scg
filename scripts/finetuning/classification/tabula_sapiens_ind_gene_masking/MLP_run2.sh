@@ -23,4 +23,4 @@ fi
 
 cd $SSL_PROJECT_HOME/self_supervision/trainer/classifier
 
-CUBLAS_WORKSPACE_CONFIG=:16:8 python -u train.py --version="new_run2" --lr=9e-4 --dropout=0.1 --weight_decay=0.05 --stochastic --supervised_subset="Tabula_Sapiens" --pretrained_dir="/lustre/groups/ml01/workspace/$USER/trained_models/pretext_models/masking/CN_MLP_50p/default/version_1/checkpoints/best_checkpoint_val.ckpt"
+CUBLAS_WORKSPACE_CONFIG=:16:8 python -u cellnet_mlp.py --version="new_run2" --lr=9e-4 --dropout=0.1 --weight_decay=0.05 --stochastic --supervised_subset="Tabula_Sapiens" --pretrained_dir="/lustre/groups/ml01/workspace/$USER/trained_models/pretext_models/masking/CN_MLP_50p/default/version_1/checkpoints/best_checkpoint_val.ckpt"

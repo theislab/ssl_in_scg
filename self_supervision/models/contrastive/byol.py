@@ -15,8 +15,6 @@ import torch.nn.functional as F
 # helper functions
 from typing import Optional, Callable, Union, Any
 
-from self_supervision.models.contrastive.data_augmentations import DropoutAugmentation, GaussianBlur, NegBinNoise
-
 
 def default(val: Optional[Any], def_val: Optional[Any] = None) -> Optional[Any]:
     """Return def_val if val is None, otherwise val.
@@ -156,14 +154,29 @@ def update_moving_average(ema_updater, ma_model, current_model):
 
 
 def MLP(dim, projection_size, hidden_size=4096):
+    """
+    MLP class for projector and predictor.
+    :param dim: dimension of input
+    :param projection_size: dimension of output
+    :param hidden_size: hidden size
+    :return: nn.Sequential
+    """
     return nn.Sequential(
         nn.Linear(dim, hidden_size),
         nn.BatchNorm1d(hidden_size),
         nn.ReLU(inplace=True),
-        nn.Linear(hidden_size, projection_size)
+        nn.Linear(hidden_size, projection_size),
     )
 
+
 def SimSiamMLP(dim, projection_size, hidden_size=4096):
+    """
+    MLP class for projector and predictor for SimSiam.
+    :param dim: dimension of input
+    :param projection_size: dimension of output
+    :param hidden_size: hidden size
+    :return: nn.Sequential
+    """
     return nn.Sequential(
         nn.Linear(dim, hidden_size, bias=False),
         nn.BatchNorm1d(hidden_size),
@@ -248,7 +261,9 @@ class NetWrapper(nn.Module):
         """
         _, dim = hidden.shape
         create_mlp_fn = MLP if not self.use_simsiam_mlp else SimSiamMLP
-        projector = create_mlp_fn(dim, self.projection_size, self.projection_hidden_size)
+        projector = create_mlp_fn(
+            dim, self.projection_size, self.projection_hidden_size
+        )
         return projector.to(hidden)
 
     def get_representation(self, x):
@@ -295,18 +310,69 @@ class NetWrapper(nn.Module):
         projector = self._get_projector(representation)
         projection = projector(representation)
         return projection, representation
-    
+
+
+class GaussianBlur(object):
+    def __init__(self, p: float):
+        """
+        Initialize the GaussianBlur class with standard deviation of the gaussian noise
+        :param p: (float) the standard deviation of the gaussian noise
+        """
+        self.p = p
+
+    def __call__(self, img: torch.Tensor) -> torch.Tensor:
+        """
+        Apply Gaussian blur to the input image
+        :param img: input image
+        :return: image after applying gaussian blur
+        """
+        # create new tensor with same shape as img and random noise with mean 0 and std = self.p
+        # this one results in the error 'TypeError: random_() received an invalid combination of arguments - got (std=float, mean=int, )'
+        # new_img = torch.tensor(img) + torch.tensor(img).new(img.shape).random_(mean=0, std=self.p)
+        # this one works
+        new_img = img.clone().detach().requires_grad_(True) + img.clone().detach().new(
+            img.shape
+        ).normal_(mean=0, std=self.p)
+        # Clamp the image pixel values between 0 and 1
+        return torch.clamp(new_img, min=0)
+
+
+class UniformBlur(object):
+    def __init__(self, p: float):
+        """
+        Initialize the class with a float value p, which denotes the strength of the noise that is added.
+        :param p: the strength of the noise that will be added.
+        """
+        self.p = p
+
+    def __call__(self, img: torch.Tensor) -> torch.Tensor:
+        """
+        This function applies a uniform noise on the input image
+        :param img: input image
+        :return: returns the blurred image
+        """
+        # Create a new tensor of the same shape and dtype as the input image, and fill it with random noise
+        # with uniform distribution between -p/2 and p/2
+        new_img = img.clone().detach().requires_grad_(True) + img.clone().detach().new(
+            img.shape
+        ).uniform_(-self.p / 2, self.p / 2)
+        # Clamp the values of the pixels of the image to be between 0 and 1
+        return torch.clamp(new_img, min=0)
+
 
 # main class
 class BYOL(nn.Module):
+    """
+    BYOL implementation
+    """
+
     def __init__(
         self,
         net,
-        image_size: int,
+        image_size,
         batch_size: int,
-        p: float,  # likelihood to apply augmentations
-        negbin_intensity: float,  # intensity of the negative binomial noise
-        dropout_intensity: float,  # intensity of the dropout augmentation
+        augment_type: str,
+        augment_intensity: float = 0.1,
         hidden_layer=-2,
         projection_size=256,
         projection_hidden_size=4096,
@@ -318,11 +384,20 @@ class BYOL(nn.Module):
         super().__init__()
         self.net = net
 
-        # Define default augmentations
-        DEFAULT_AUG = nn.Sequential(
-            RandomApply(NegBinNoise(intensity=negbin_intensity), p=p),
-            RandomApply(DropoutAugmentation(intensity=dropout_intensity), p=p)
-        )
+        # augmentations for the two views
+        if augment_type == "Gaussian":
+            augment_f = GaussianBlur(augment_intensity)
+        elif augment_type == "Uniform":
+            augment_f = UniformBlur(augment_intensity)
+        elif augment_type == "Meta_Cells":
+            raise NotImplementedError
+
+        # augmentations for the two views
+        DEFAULT_AUG = augment_f
+
+        print("Projection size: ", projection_size)
+        print("Projection hidden size: ", projection_hidden_size)
+        print("Hidden layer: ", hidden_layer)
 
         self.augment1 = default(augment_fn, DEFAULT_AUG)
         self.augment2 = default(augment_fn2, self.augment1)
@@ -339,16 +414,19 @@ class BYOL(nn.Module):
         self.target_encoder = None
         self.target_ema_updater = EMA(moving_average_decay)
 
-        self.online_predictor = MLP(projection_size, projection_size, projection_hidden_size)
+        self.online_predictor = MLP(
+            projection_size, projection_size, projection_hidden_size
+        )
 
         # get device of network and make wrapper same device
         device = get_module_device(net)
+        # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.to(device)
 
         # send a mock image tensor to instantiate singleton parameters
         self.forward(torch.randn(batch_size, image_size, device=device).to(device))
 
-    @singleton('target_encoder')
+    @singleton("target_encoder")
     def _get_target_encoder(self):
         target_encoder = copy.deepcopy(self.online_encoder)
         set_requires_grad(target_encoder, False)
@@ -359,37 +437,38 @@ class BYOL(nn.Module):
         self.target_encoder = None
 
     def update_moving_average(self):
-        assert self.use_momentum, 'you do not need to update the moving average, since you have turned off momentum for the target encoder'
-        assert self.target_encoder is not None, 'target encoder has not been created yet'
-        update_moving_average(self.target_ema_updater, self.target_encoder, self.online_encoder)
+        assert self.use_momentum, "you do not need to update the moving average, since you have turned off momentum for the target encoder"
+        assert (
+            self.target_encoder is not None
+        ), "target encoder has not been created yet"
+        update_moving_average(
+            self.target_ema_updater, self.target_encoder, self.online_encoder
+        )
 
-    def forward(
-        self,
-        x,
-        return_embedding=False,
-        return_projection=True
-    ):
-        assert not (self.training and x.shape[0] == 1), 'you must have greater than 1 sample when training, due to the batchnorm in the projection layer'
+    def forward(self, x, return_embedding=False, return_projection=True):
+        assert not (
+            self.training and x.shape[0] == 1
+        ), "you must have greater than 1 sample when training, due to the batchnorm in the projection layer"
 
         if return_embedding:
             return self.online_encoder(x, return_projection=return_projection)
 
         image_one, image_two = self.augment1(x), self.augment2(x)
 
-        images = torch.cat((image_one, image_two), dim=0)
+        online_proj_one, _ = self.online_encoder(image_one)
+        online_proj_two, _ = self.online_encoder(image_two)
 
-        online_projections, _ = self.online_encoder(images)
-        online_predictions = self.online_predictor(online_projections)
-
-        online_pred_one, online_pred_two = online_predictions.chunk(2, dim=0)
+        online_pred_one = self.online_predictor(online_proj_one)
+        online_pred_two = self.online_predictor(online_proj_two)
 
         with torch.no_grad():
-            target_encoder = self._get_target_encoder() if self.use_momentum else self.online_encoder
-
-            target_projections, _ = target_encoder(images)
-            target_projections = target_projections.detach()
-
-            target_proj_one, target_proj_two = target_projections.chunk(2, dim=0)
+            target_encoder = (
+                self._get_target_encoder() if self.use_momentum else self.online_encoder
+            )
+            target_proj_one, _ = target_encoder(image_one)
+            target_proj_two, _ = target_encoder(image_two)
+            target_proj_one.detach_()
+            target_proj_two.detach_()
 
         loss_one = loss_fn(online_pred_one, target_proj_two.detach())
         loss_two = loss_fn(online_pred_two, target_proj_one.detach())

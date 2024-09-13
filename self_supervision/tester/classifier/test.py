@@ -30,7 +30,6 @@ from self_supervision.tester.classifier.evaluation_utils import (
     evaluate_random_model,
 )
 from self_supervision.tester.classifier.kNN import perform_knn
-from self_supervision.paths import DATA_DIR, RESULTS_FOLDER
 from typing import Optional, Tuple, Dict
 import gc
 
@@ -38,6 +37,8 @@ import gc
 def eval_emb_knn_per_class(
     estim,
     model_dirs: list[str],
+    DATA_PATH: str = "/lustre/groups/ml01/workspace/till.richter/",
+    RESULT_PATH: str = "/lustre/groups/ml01/workspace/till.richter/ssl_results",
     train_dataloader: Optional[torch.utils.data.DataLoader] = None,
     val_dataloader: Optional[torch.utils.data.DataLoader] = None,
     test_dataloader: Optional[torch.utils.data.DataLoader] = None,
@@ -49,6 +50,8 @@ def eval_emb_knn_per_class(
     Args:
         estim: The estimator object.
         model_dirs: A list of model directories.
+        DATA_PATH: The path to the data.
+        RESULT_PATH: The path to save the results.
         train_dataloader: Optional. The data loader for training data.
         val_dataloader: Optional. The data loader for validation data.
         test_dataloader: Optional. The data loader for test data.
@@ -80,7 +83,7 @@ def eval_emb_knn_per_class(
     )
 
     # Prepare data path:
-    REFERENCE_PATH, DATA_PATH = prepare_data_path(DATA_DIR, setting)
+    REFERENCE_PATH, DATA_PATH = prepare_data_path(DATA_PATH, setting)
 
     # Initialize subset if necessary
     supervised_subset = initialize_subset(setting)
@@ -91,7 +94,7 @@ def eval_emb_knn_per_class(
     )  # Artefact of handling lists
     if is_supervised:
         clf_report_path = os.path.join(
-            RESULTS_FOLDER,
+            RESULT_PATH,
             "classification",
             "val_clf_per_class_report_"
             + str(supervised_subset)
@@ -99,7 +102,7 @@ def eval_emb_knn_per_class(
         )
     else:
         clf_report_path = os.path.join(
-            RESULTS_FOLDER,
+            RESULT_PATH,
             "classification",
             "val_clf_per_class_report_" + str(supervised_subset) + "_ssl_knn.csv",
         )
@@ -130,7 +133,7 @@ def eval_emb_knn_per_class(
                 train_dataloader=train_dataloader,
                 val_dataloader=val_dataloader,
                 test_dataloader=test_dataloader,
-                RESULT_PATH=RESULTS_FOLDER,
+                RESULT_PATH=RESULT_PATH,
                 setting=setting,
                 index_str=index_str,
             )
@@ -212,10 +215,10 @@ def eval_emb_knn_per_class(
 
     # Load and filter test labels
     test_labels_reference = dd.read_parquet(
-        os.path.join(DATA_DIR, "test"), columns=["dataset_id"]
+        os.path.join(DATA_PATH, "test"), columns=["dataset_id"]
     )
     test_labels = dd.read_parquet(
-        os.path.join(DATA_DIR, "test"), columns=["cell_type"]
+        os.path.join(DATA_PATH, "test"), columns=["cell_type"]
     )
     test_labels_filtered = (
         test_labels[test_labels_reference["dataset_id"] == supervised_subset]
@@ -248,7 +251,7 @@ def eval_emb_knn_per_class(
 
     # Add 'Cell Type' column based on the index
     cell_type_mapping = pd.read_parquet(
-        os.path.join(DATA_DIR, "categorical_lookup/cell_type.parquet")
+        os.path.join(DATA_PATH, "categorical_lookup/cell_type.parquet")
     )
     mapped_labels = cell_type_mapping.iloc[
         final_report.index.astype(int)
@@ -269,6 +272,8 @@ def eval_emb_knn_per_class(
 def get_total_correct(
     estim,
     model_dirs: list[str],
+    DATA_PATH: str = "/lustre/groups/ml01/workspace/till.richter/",
+    RESULT_PATH: str = "/lustre/groups/ml01/workspace/till.richter/ssl_results",
     train_dataloader: Optional[torch.utils.data.DataLoader] = None,
     val_dataloader: Optional[torch.utils.data.DataLoader] = None,
     test_dataloader: Optional[torch.utils.data.DataLoader] = None,
@@ -281,6 +286,8 @@ def get_total_correct(
     Parameters:
     - estim: The estimator object used for prediction.
     - model_dirs: A list of directories containing the models to be evaluated.
+    - DATA_PATH: The path to the data.
+    - RESULT_PATH: The path to save the results.
     - train_dataloader: The dataloader for the training data.
     - val_dataloader: The dataloader for the validation data.
     - test_dataloader: The dataloader for the test data.
@@ -312,7 +319,7 @@ def get_total_correct(
     )
 
     # Prepare data path:
-    REFERENCE_PATH, DATA_PATH = prepare_data_path(DATA_DIR, setting)
+    REFERENCE_PATH, DATA_PATH = prepare_data_path(DATA_PATH, setting)
 
     # Initialize subset if necessary
     supervised_subset = initialize_subset(setting)
@@ -344,7 +351,7 @@ def get_total_correct(
                 train_dataloader=train_dataloader,
                 val_dataloader=val_dataloader,
                 test_dataloader=test_dataloader,
-                RESULT_PATH=RESULTS_FOLDER,
+                RESULT_PATH=RESULT_PATH,
                 setting=setting,
                 index_str=index_str,
             )
@@ -412,7 +419,7 @@ def get_total_correct(
                 # Save the predicted labels to disk
                 np.save(
                     os.path.join(
-                        RESULTS_FOLDER,
+                        RESULT_PATH,
                         "classification",
                         "new_predicted_labels_" + index_str + ".npy",
                     ),
@@ -421,7 +428,7 @@ def get_total_correct(
                 print(
                     "Saved predicted labels to disk at ",
                     os.path.join(
-                        RESULTS_FOLDER,
+                        RESULT_PATH,
                         "classification",
                         "new_predicted_labels_" + index_str + ".npy",
                     ),
@@ -430,7 +437,7 @@ def get_total_correct(
                 # Save true labels to disk
                 np.save(
                     os.path.join(
-                        RESULTS_FOLDER,
+                        RESULT_PATH,
                         "classification",
                         "new_true_labels_" + index_str + ".npy",
                     ),
@@ -439,11 +446,50 @@ def get_total_correct(
                 print(
                     "Saved true labels to disk at ",
                     os.path.join(
-                        RESULTS_FOLDER,
+                        RESULT_PATH,
                         "classification",
                         "new_true_labels_" + index_str + ".npy",
                     ),
                 )
+
+                # Load and filter test labels (str for dataframe)
+                # test_labels_reference = dd.read_parquet(
+                #     os.path.join(DATA_PATH, "test"), columns=["dataset_id"]
+                # )
+                # test_labels = dd.read_parquet(
+                #     os.path.join(DATA_PATH, "test"), columns=["cell_type"]
+                # )
+                # cell_type_mapping = pd.read_parquet(
+                #     os.path.join(DATA_PATH, "categorical_lookup/cell_type.parquet")
+                # )
+
+                # test_labels_filtered = (
+                #     test_labels[
+                #         test_labels_reference["dataset_id"] == supervised_subset
+                #     ]
+                #     .compute()
+                #     .to_numpy()
+                #     .flatten()
+                # )
+
+                # Map labels
+                # mapped_labels = cell_type_mapping.loc[
+                #     test_labels_filtered, "label"
+                # ].values
+
+                # Unique labels for indexing the DataFrame
+                # unique_labels = np.unique(mapped_labels)
+
+                # Create DataFrame for storing the counts of correct predictions per cell type
+                # correct_counts = pd.DataFrame(
+                #     index=unique_labels, columns=["Correct Count"], dtype=int
+                # )
+
+                # Count the number of correct predictions (from y_pred_corr vs. mapped_labels)
+                # for label in unique_labels:
+                #     correct_counts.loc[label, "Correct Count"] = int(
+                #         np.sum(y_pred_corr[mapped_labels == label])
+                #     )
 
                 # Without the mapping
                 correct_counts = pd.DataFrame(
@@ -461,7 +507,7 @@ def get_total_correct(
                 # Save the counts to disk
                 correct_counts.to_csv(
                     os.path.join(
-                        RESULTS_FOLDER,
+                        RESULT_PATH,
                         "classification",
                         "new_correct_counts_" + index_str + ".csv",
                     )
@@ -469,7 +515,7 @@ def get_total_correct(
                 print(
                     "Saved correct counts to disk at ",
                     os.path.join(
-                        RESULTS_FOLDER,
+                        RESULT_PATH,
                         "classification",
                         "new_correct_counts_" + index_str + ".csv",
                     ),
@@ -487,13 +533,13 @@ def get_total_correct(
 
     # Save total number of true counts per cell type to disk
     test_labels_reference = dd.read_parquet(
-        os.path.join(DATA_DIR, "test"), columns=["dataset_id"]
+        os.path.join(DATA_PATH, "test"), columns=["dataset_id"]
     )
     test_labels = dd.read_parquet(
-        os.path.join(DATA_DIR, "test"), columns=["cell_type"]
+        os.path.join(DATA_PATH, "test"), columns=["cell_type"]
     )
     cell_type_mapping = pd.read_parquet(
-        os.path.join(DATA_DIR, "categorical_lookup/cell_type.parquet")
+        os.path.join(DATA_PATH, "categorical_lookup/cell_type.parquet")
     )
 
     test_labels_filtered = (
@@ -517,16 +563,18 @@ def get_total_correct(
         true_counts.loc[label, "True Count"] = np.sum(mapped_labels == label)
 
     # Save the counts to disk
-    true_counts.to_csv(os.path.join(RESULTS_FOLDER, "classification", "true_counts.csv"))
+    true_counts.to_csv(os.path.join(RESULT_PATH, "classification", "true_counts.csv"))
     print(
         "Saved true counts to disk at ",
-        os.path.join(RESULTS_FOLDER, "classification", setting + "_true_counts.csv"),
+        os.path.join(RESULT_PATH, "classification", setting + "_true_counts.csv"),
     )
 
 
 def eval_emb_knn(
     estim,
     model_dirs: list[str],
+    DATA_PATH: str = "/lustre/groups/ml01/workspace/till.richter/",
+    RESULT_PATH: str = "/lustre/groups/ml01/workspace/till.richter/ssl_results",
     train_dataloader: Optional[torch.utils.data.DataLoader] = None,
     val_dataloader: Optional[torch.utils.data.DataLoader] = None,
     test_dataloader: Optional[torch.utils.data.DataLoader] = None,
@@ -557,13 +605,13 @@ def eval_emb_knn(
     )
 
     # Prepare data path:
-    REFERENCE_PATH, DATA_PATH = prepare_data_path(DATA_DIR, setting)
+    REFERENCE_PATH, DATA_PATH = prepare_data_path(DATA_PATH, setting)
 
     # Initialize subset if necessary
     supervised_subset = initialize_subset(setting)
 
     # Load classification report
-    clf_report = prepare_clf_report(RESULT_PATH=RESULTS_FOLDER, setting=setting)
+    clf_report = prepare_clf_report(RESULT_PATH=RESULT_PATH, setting=setting)
 
     _, reference_labels, test_labels = load_and_process_labels(
         data_path=DATA_PATH,
@@ -600,7 +648,7 @@ def eval_emb_knn(
                 train_dataloader=train_dataloader,
                 val_dataloader=val_dataloader,
                 test_dataloader=test_dataloader,
-                RESULT_PATH=RESULTS_FOLDER,
+                RESULT_PATH=RESULT_PATH,
                 setting=setting,
                 index_str=index_str,
             )
@@ -662,7 +710,7 @@ def eval_emb_knn(
                     y_true=test_labels,
                     model_dir=model_dir,
                     clf_report=clf_report,
-                    RESULT_PATH=RESULTS_FOLDER,
+                    RESULT_PATH=RESULT_PATH,
                     setting=setting,
                 )
             except Exception as exc:
@@ -691,7 +739,7 @@ def eval_emb_knn(
                 estim=estim,
                 y_true=test_labels,
                 clf_report=clf_report,
-                RESULT_PATH=RESULTS_FOLDER,
+                RESULT_PATH=RESULT_PATH,
                 cell_type_hierarchy=cell_type_hierarchy,
                 reference_labels=reference_labels,
                 train_dataloader=train_dataloader,
@@ -723,7 +771,7 @@ def eval_emb_knn(
                 test_labels=test_labels,
                 cell_type_hierarchy=cell_type_hierarchy,
                 clf_report=clf_report,
-                RESULT_PATH=RESULTS_FOLDER,
+                RESULT_PATH=RESULT_PATH,
                 res=res,
                 setting=setting,
                 k=5,
@@ -751,7 +799,7 @@ def eval_emb_knn(
                 test_labels=test_labels,
                 cell_type_hierarchy=cell_type_hierarchy,
                 clf_report=clf_report,
-                RESULT_PATH=RESULTS_FOLDER,
+                RESULT_PATH=RESULT_PATH,
                 res=res,
                 setting=setting,
                 k=5,

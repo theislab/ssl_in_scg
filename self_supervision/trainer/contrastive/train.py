@@ -9,25 +9,46 @@ from lightning.pytorch.loggers import TensorBoardLogger
 import os
 from pathlib import Path
 from self_supervision.estimator.cellnet import EstimatorAutoEncoder
-from self_supervision.paths import DATA_DIR, TRAINING_FOLDER
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--samples", type=dict, default=None)
+    parser.add_argument("--model", type=str, default="MLP")
     parser.add_argument("--contrastive_method", type=str, default="BYOL")
-    parser.add_argument("--p", type=float, default=0.5, help="Likelihood of data augmentation")
-    parser.add_argument("--negbin_intensity", type=float, default=0.1, help="Negative binomial intensity")
-    parser.add_argument("--dropout_intensity", type=float, default=0.1, help="Dropout intensity")
-    parser.add_argument("--lr", type=float, default=0.01)
+    parser.add_argument("--augment_type", type=str, default="Gaussian")
+    parser.add_argument("--augment_intensity", type=float, default=0.01)
+    parser.add_argument("--lr", type=float, default=0.005)
     parser.add_argument("--learning_rate_weights", type=float, default=0.2)
-    parser.add_argument("--weight_decay", type=float, default=1e-5)
+    parser.add_argument("--weight_decay", type=float, default=1e-6)
     parser.add_argument("--dropout", type=float, default=0.0)
     parser.add_argument("--hidden_units", type=list, default=[512, 512, 256, 256, 64])
     parser.add_argument("--batch_size", type=int, default=8192)
     parser.add_argument("--checkpoint_interval", default=1, type=int)
     parser.add_argument("--version", type=str, default="")
-    parser.add_argument("--max_epochs", type=int, default=1000)
+    parser.add_argument(
+        "--hvg", action="store_true", help="Whether to use highly variable genes"
+    )
+    parser.add_argument(
+        "--num_hvgs",
+        default=2000,
+        type=int,
+        help="Number of highly variable genes to use",
+    )
+    parser.add_argument(
+        "--data_path",
+        default="/lustre/groups/ml01/workspace/till.richter/merlin_cxg_2023_05_15_sf-log1p",
+        type=str,
+        help="Path to the data stored as parquet files",
+    )
+    # Old, 10M dataset: '/lustre/scratch/users/till.richter/merlin_cxg_simple_norm_parquet'
+    parser.add_argument(
+        "--model_path",
+        default="/lustre/groups/ml01/workspace/till.richter/",
+        type=str,
+        help="Path where the lightning checkpoints are stored",
+    )
+
     return parser.parse_args()
 
 
@@ -42,19 +63,21 @@ if __name__ == "__main__":
     torch.manual_seed(0)
 
     # CHECKPOINT HANDLING
+    if args.hvg:
+        use_hvg = "HVG_" + str(args.num_hvgs) + "_"
+    else:
+        use_hvg = ""
     subfolder = (
-        args.contrastive_method
-        + "_p_"
-        + str(args.p)
-        + "_negbin_"
-        + str(args.negbin_intensity)
-        + "_dropout_"
-        + str(args.dropout_intensity)
-        + "_lr_"
-        + str(args.lr)
-        + "_wd_"
-        + str(args.weight_decay)
-        + str(args.version)
+        use_hvg
+        + args.model
+        + "_"
+        + args.contrastive_method
+        + "_"
+        + str(args.augment_type)
+        + "_"
+        + str(args.augment_intensity)
+        + "_"
+        + args.version
     )
     if "." in subfolder:  # replace dot with underscore
         subfolder = subfolder.replace(".", "_")
@@ -62,15 +85,13 @@ if __name__ == "__main__":
     if subfolder[-1] == "_":
         subfolder = subfolder[:-1]
     CHECKPOINT_PATH = os.path.join(
-        TRAINING_FOLDER, "pretext_models", "contrastive", subfolder
+        args.model_path, "trained_models", "pretext_models", "contrastive", subfolder
     )
     print("Will save model to " + CHECKPOINT_PATH)
     Path(CHECKPOINT_PATH).mkdir(parents=True, exist_ok=True)
 
     # get estimator
-    estim = EstimatorAutoEncoder(        
-        data_path=os.path.join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p"),
-    )
+    estim = EstimatorAutoEncoder(data_path=args.data_path, hvg=args.hvg)
 
     # set up datamodule
     estim.init_datamodule(batch_size=args.batch_size)
@@ -114,13 +135,14 @@ if __name__ == "__main__":
         estim.init_model(
             model_type="mlp_bt",
             model_kwargs={
-                "units_encoder": args.hidden_units,
-                "negbin_intensity": args.negbin_intensity,
-                "dropout_intensity": args.dropout_intensity,
-                "lr": args.lr,
-                "dropout": args.dropout,
+                "backbone": "MLP",
+                "units_encoder": [512, 512, 256, 256, 64],
+                "learning_rate_weights": args.learning_rate_weights,
                 "weight_decay": args.weight_decay,
+                "dropout": args.dropout,
+                "augment_intensity": args.augment_intensity,
                 "CHECKPOINT_PATH": CHECKPOINT_PATH,
+                "train_set_size": sum(estim.datamodule.train_dataset.partition_lens)
             },
         )
         print("Training Barlow Twins")
@@ -129,7 +151,7 @@ if __name__ == "__main__":
     else:
         estim.init_trainer(
             trainer_kwargs={
-                "max_epochs": args.max_epochs,
+                "max_epochs": 1000,
                 "gradient_clip_val": 1.0,
                 "gradient_clip_algorithm": "norm",
                 "default_root_dir": CHECKPOINT_PATH,
@@ -171,10 +193,10 @@ if __name__ == "__main__":
         estim.init_model(
             model_type="mlp_byol",
             model_kwargs={
+                "backbone": args.model,
                 "units_encoder": args.hidden_units,
-                "p": args.p,
-                "negbin_intensity": args.negbin_intensity,
-                "dropout_intensity": args.dropout_intensity,
+                "augment_type": args.augment_type,
+                "augment_intensity": args.augment_intensity,
                 "lr": args.lr,
                 "dropout": args.dropout,
                 "weight_decay": args.weight_decay,

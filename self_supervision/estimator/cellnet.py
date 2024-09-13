@@ -23,8 +23,10 @@ class EstimatorAutoEncoder:
     model: pl.LightningModule
     trainer: pl.Trainer
 
-    def __init__(self, data_path: str):
+    def __init__(self, data_path: str, hvg: bool = False, num_hvgs: int = 2000):
         self.data_path = data_path
+        self.hvg = hvg
+        self.num_hvgs = num_hvgs
 
     def init_datamodule(
         self,
@@ -90,25 +92,54 @@ class EstimatorAutoEncoder:
             )
 
     def get_fixed_autoencoder_params(self):
-        return {
-            "gene_dim": len(pd.read_parquet(join(self.data_path, "var.parquet"))),
-            "batch_size": self.datamodule.batch_size,
-        }
+        if self.hvg:
+            return {
+                "gene_dim": self.num_hvgs,
+                "batch_size": self.datamodule.batch_size,
+                "hvg": self.hvg,
+                "num_hvgs": self.num_hvgs,
+            }
+        else:
+            return {
+                "gene_dim": len(pd.read_parquet(join(self.data_path, "var.parquet"))),
+                "batch_size": self.datamodule.batch_size,
+                "hvg": self.hvg,
+                "num_hvgs": self.num_hvgs,
+            }
 
     def get_fixed_clf_params(self):
-        return {
-            "gene_dim": len(pd.read_parquet(join(self.data_path, "var.parquet"))),
-            "type_dim": len(
-                pd.read_parquet(
-                    join(self.data_path, "categorical_lookup/cell_type.parquet")
-                )
-            ),
-            "class_weights": np.load(join(self.data_path, "class_weights.npy")),
-            "child_matrix": np.load(
-                join(self.data_path, "cell_type_hierarchy/child_matrix.npy")
-            ),
-            "batch_size": self.datamodule.batch_size,
-        }
+        if self.hvg:
+            return {
+                "gene_dim": self.num_hvgs,
+                "class_weights": np.load(join(self.data_path, "class_weights.npy")),
+                "type_dim": len(
+                    pd.read_parquet(
+                        join(self.data_path, "categorical_lookup/cell_type.parquet")
+                    )
+                ),
+                "child_matrix": np.load(
+                    join(self.data_path, "cell_type_hierarchy/child_matrix.npy")
+                ),
+                "batch_size": self.datamodule.batch_size,
+                "hvg": self.hvg,
+                "num_hvgs": self.num_hvgs,
+            }
+        else:
+            return {
+                "gene_dim": len(pd.read_parquet(join(self.data_path, "var.parquet"))),
+                "type_dim": len(
+                    pd.read_parquet(
+                        join(self.data_path, "categorical_lookup/cell_type.parquet")
+                    )
+                ),
+                "class_weights": np.load(join(self.data_path, "class_weights.npy")),
+                "child_matrix": np.load(
+                    join(self.data_path, "cell_type_hierarchy/child_matrix.npy")
+                ),
+                "batch_size": self.datamodule.batch_size,
+                "hvg": self.hvg,
+                "num_hvgs": self.num_hvgs,
+            }
 
     def find_lr(self, lr_find_kwargs, plot_results: bool = False):
         self._check_is_initialized()

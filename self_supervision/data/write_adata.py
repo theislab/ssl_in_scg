@@ -10,10 +10,12 @@ import pickle
 import logging
 from contextlib import contextmanager
 import scipy.sparse as sp
-from self_supervision.paths import DATA_DIR
 
 logging.basicConfig(level=logging.INFO)
 
+DATA_DIR: str = (
+    "/lustre/groups/ml01/workspace/till.richter/merlin_cxg_2023_05_15_sf-log1p"
+)
 
 
 @contextmanager
@@ -51,20 +53,22 @@ def write_adata(
     perc: int,
     hvg_indices: Optional[List[int]] = None,
     split: str = "train",
+    adata_dir: str = "/lustre/groups/ml01/workspace/till.richter/",
 ):
     """
     Write AnnData object to disk with perc % of the data.
     :param perc: Percentage of data to use.
     :param hvg_indices: List of indices of highly variable genes.
     :param split: Data split, e.g. 'train', 'test'.
+    :param adata_dir: Directory to save the AnnData object.
     :return: None
     """
     # Load the data
-    ddf_split = dd.read_parquet(join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p", split))
+    ddf_split = dd.read_parquet(join(DATA_DIR, split))
     x_split, obs_split = get_count_matrix_and_obs(ddf_split, perc)
 
     gene_ens_ids = list(
-        pd.read_parquet(os.path.join(DATA_DIR, "merlin_cxg_2023_05_15_sf-log1p", "var.parquet"))["feature_id"]
+        pd.read_parquet(os.path.join(DATA_DIR, "var.parquet"))["feature_id"]
     )
 
     # Compute and create AnnData object
@@ -81,8 +85,8 @@ def write_adata(
         if hvg_indices is None
         else f"cellxgene_hvg_{split}_adata.h5ad"
     )
-    print(f"Writing AnnData object to {join(DATA_DIR, file_name)}")
-    adata.write_h5ad(join(DATA_DIR, file_name))
+    print(f"Writing AnnData object to {join(adata_dir, file_name)}")
+    adata.write_h5ad(join(adata_dir, file_name))
 
     del adata, x_split, obs_split
     print("Done.")
@@ -100,8 +104,12 @@ def parse_arguments():
     parser.add_argument(
         "--split", type=str, choices=["train", "test", "val"], help="Split name"
     )
+    parser.add_argument("--adata_dir", type=str, default=".", help="Output directory")
     return parser.parse_args()
 
+
+# Usage example in bash:
+# python write_adata.py --perc 100 --split train --adata_dir /lustre/groups/ml01/workspace/mojtaba.bahrami/cellxgene/
 
 if __name__ == "__main__":
     args = parse_arguments()
@@ -121,5 +129,6 @@ if __name__ == "__main__":
             perc=args.perc,
             hvg_indices=hvg_indices,
             split=args.split,
+            adata_dir=args.adata_dir,
         )
     print("Done.")

@@ -3,7 +3,7 @@ import lightning.pytorch as pl
 from typing import Optional
 from self_supervision.models.lightning_modules.cellnet_autoencoder import MLPClassifier
 from self_supervision.estimator.cellnet import EstimatorAutoEncoder
-from self_supervision.trainer.classifier.train import update_weights
+from self_supervision.trainer.classifier.cellnet_mlp import update_weights
 
 
 def load_model(
@@ -135,7 +135,7 @@ def prepare_estim(estim, wrapped_model, batch_size):
     """
     # Re-initialize the estim.model to avoid nesting somehow
     # Assign the wrapped model to estim for prediction
-    estim = EstimatorAutoEncoder(data_path=estim.data_path)
+    estim = EstimatorAutoEncoder(data_path=estim.data_path, hvg=estim.hvg)
     estim.init_datamodule(batch_size=batch_size)
     # Assign the wrapped model to estim for prediction
     estim.model = None

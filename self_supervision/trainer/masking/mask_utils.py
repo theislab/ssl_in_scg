@@ -68,12 +68,15 @@ def read_gmt_to_dict(gp_file: str) -> Dict[str, List[str]]:
 def encode_gene_programs(
     var_names: List[str],
     gene_program: List[List[str]],
+    required_tolerance: int,
+    hvg: bool = False,
 ) -> np.ndarray:
     """
     Encode gene programs into a multi-hot encoded tensor.
     The rows of the tensor are the gene programs and the columns are the genes in the same order as the gene list.
     The element of the tensor at row (gene program) i and column (gene) j is 1 if the gene program contains the gene and 0 otherwise.
     If a gene in gene_program is not in the gene list, ignore it.
+    :param hvg: bool if highly variable genes, i.e. a subset of all genes, were used
     :param required_tolerance: percentage of genes at least present in the dataset for a gene program to be included
     :param var_names: list of genes in the dataset
     :param gene_program: gene programs to encode
@@ -86,10 +89,44 @@ def encode_gene_programs(
     encoded_gene_program = np.zeros((len(gene_program), len(var_names)))
     # iterate over gene programs
 
-    for i, program in enumerate(gene_program):
-        # get indices of genes in the program that are also in the dataset
-        encoded_gene_program[i, np.in1d(var_names, program)] = 1
-    print(f"Encoding gene programs took {time.time() - start_time:.2f} seconds")
+    if hvg:
+        # Iterate over gene programs
+        filtered_gene_programs = []
+        for i, program in enumerate(gene_program):
+            # Count the number of missing genes in var_names for the current gene program as
+            # percentage of the total number of genes in the gene program
+            missing_genes = sum(gene not in var_names for gene in program) / len(
+                program
+            )
+
+            # Include the gene program in the encoded output only if it has at least 'required_tolerance' missing genes
+            if (1 - missing_genes) <= (required_tolerance / 100):
+                filtered_gene_programs.append(program)
+
+                program_indices = np.where(np.isin(var_names, program))[0]
+
+                # skip if no genes in the gene program are in the dataset
+                if len(program_indices) == 0:
+                    continue
+
+                encoded_gene_program[i, program_indices] = 1
+
+        # Calculate the percentage and number of gene programs left after filtering
+        original_count = len(gene_program)
+        filtered_count = len(filtered_gene_programs)
+        percentage_remaining = (filtered_count / original_count) * 100
+
+        print(
+            f"Filtering gene programs based on missing genes took {time.time() - start_time:.2f} seconds"
+        )
+        print(
+            f"{percentage_remaining:.2f}% of gene programs remaining after filtering ({filtered_count}/{original_count})"
+        )
+    else:
+        for i, program in enumerate(gene_program):
+            # get indices of genes in the program that are also in the dataset
+            encoded_gene_program[i, np.in1d(var_names, program)] = 1
+        print(f"Encoding gene programs took {time.time() - start_time:.2f} seconds")
     return encoded_gene_program
 
 
