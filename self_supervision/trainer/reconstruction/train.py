@@ -318,7 +318,6 @@ if __name__ == "__main__":
             "units_encoder": args.hidden_units,
             "units_decoder": args.hidden_units[::-1][1:] if args.decoder else [],
             "supervised_subset": supervised_subset,
-            "vae_type": args.vae_type,
         },
     )
 
@@ -330,7 +329,7 @@ if __name__ == "__main__":
 
     if not (not args.pretrained_dir or checkpoint_exists(CHECKPOINT_PATH)):
         print("Load pre-trained weights from", args.pretrained_dir)
-        final_dict = update_weights(args.pretrained_dir, estim, args.model)
+        final_dict = update_weights(args.pretrained_dir, estim)
         # update initial state dict with weights from pretraining and fill the rest with initial weights
         estim.model.load_state_dict(final_dict)
         estim.train()
