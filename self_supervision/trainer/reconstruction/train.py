@@ -14,6 +14,7 @@ from self_supervision.data.checkpoint_utils import (
     checkpoint_exists,
 )
 from self_supervision.estimator.cellnet import EstimatorAutoEncoder
+from lightning.pytorch.callbacks import EarlyStopping
 
 
 def update_weights(pretrained_dir, estim):
@@ -173,6 +174,24 @@ def parse_args():
     type=int,
     help="logging frequency",
     )
+    parser.add_argument(
+    "--min_delta",
+    default=0.0001,
+    type=float,
+    help="min delta for val loss early stopping",
+    )
+    parser.add_argument(
+    "--patience",
+    default=30,
+    type=int,
+    help="number of epochs to wait for val loss to imrpove before early stopping",
+    )
+    parser.add_argument(
+    "--early_stopping",
+    default='True',
+    type=str,
+    help="early stopping",
+    )
     return parser.parse_args()
 
 
@@ -253,23 +272,15 @@ if __name__ == "__main__":
     # set up datamodule
     estim.init_datamodule(batch_size=args.batch_size)
 
-    estim.init_trainer(
-        trainer_kwargs={
-            "max_steps": args.max_steps,
-            "gradient_clip_val": 1.0,
-            "gradient_clip_algorithm": "norm",
-            "default_root_dir": CHECKPOINT_PATH,
-            "accelerator": "gpu",
-            "devices": 1,
-            "num_sanity_val_steps": 0,
-            "check_val_every_n_epoch": 1,
-            "logger": [WandbLogger(save_dir=CHECKPOINT_PATH)],
-            "log_every_n_steps": args.log_freq,
-            "detect_anomaly": False,
-            "enable_progress_bar": True,
-            "enable_model_summary": False,
-            "enable_checkpointing": True,
-            "callbacks": [
+    early_stop_callback = EarlyStopping(
+    monitor='val_loss',
+    min_delta=args.min_delta,
+    patience=args.patience,
+    verbose=True,
+    mode='min'
+    )
+
+    callback_list = [
                 TQDMProgressBar(refresh_rate=300),
                 LearningRateMonitor(logging_interval="step"),
                 # Save the model with the best training loss
@@ -290,6 +301,28 @@ if __name__ == "__main__":
                 ),
                 ModelCheckpoint(filename="last_checkpoint", monitor=None),
             ],
+
+    if args.early_stopping == 'True':
+        print('Using Early Stopping')
+        callback_list.append(early_stop_callback)
+
+    estim.init_trainer(
+        trainer_kwargs={
+            "max_steps": args.max_steps,
+            "gradient_clip_val": 1.0,
+            "gradient_clip_algorithm": "norm",
+            "default_root_dir": CHECKPOINT_PATH,
+            "accelerator": "gpu",
+            "devices": 1,
+            "num_sanity_val_steps": 0,
+            "check_val_every_n_epoch": 1,
+            "logger": [WandbLogger(save_dir=CHECKPOINT_PATH)],
+            "log_every_n_steps": args.log_freq,
+            "detect_anomaly": False,
+            "enable_progress_bar": True,
+            "enable_model_summary": False,
+            "enable_checkpointing": True,
+            "callbacks": callback_list,
         }
     )
 
