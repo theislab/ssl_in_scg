@@ -300,7 +300,7 @@ if __name__ == "__main__":
                     save_top_k=1,
                 ),
                 ModelCheckpoint(filename="last_checkpoint", monitor=None),
-            ],
+            ]
 
     if args.early_stopping == 'True':
         print('Using Early Stopping')
